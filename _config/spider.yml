@@ -1,0 +1,45 @@
+---
+Name: kalakotra-sitespider
+After:
+  - aigateway
+  - '#coreconfig'
+
+# ── Injector wiring ────────────────────────────────────────────────────────────
+
+SilverStripe\Core\Injector\Injector:
+
+  GuzzleHttp\Client:
+    class: GuzzleHttp\Client
+    constructor:
+      config:
+        timeout: 30
+        connect_timeout: 10
+        headers:
+          User-Agent: 'KalakotraSiteSpider/2.0'
+
+  Kalakotra\SiteSpider\Services\SpiderService:
+    class: Kalakotra\SiteSpider\Services\SpiderService
+    constructor:
+      httpClient: '%$GuzzleHttp\Client'
+      logger: '%$Psr\Log\LoggerInterface'
+
+  Kalakotra\SiteSpider\Services\AuditService:
+    class: Kalakotra\SiteSpider\Services\AuditService
+    constructor:
+      spider:    '%$Kalakotra\SiteSpider\Services\SpiderService'
+      aiGateway: '%$Kalakotra\AIGateway\Services\AIGatewayService'
+      httpClient: '%$GuzzleHttp\Client'
+      logger:    '%$Psr\Log\LoggerInterface'
+
+# ── Spider configuration ───────────────────────────────────────────────────────
+
+Kalakotra\SiteSpider\Services\SpiderService:
+  connect_timeout: 10
+  request_timeout: 30
+  user_agent: 'KalakotraSiteSpider/2.0 (+https://kalakotra.com)'
+  respect_nofollow: true
+
+Kalakotra\SiteSpider\Services\AuditService:
+  ai_cannibalization_enabled: true
+  ai_onpage_enabled: true
+  crawl_delay_ms: 0

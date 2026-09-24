@@ -1,0 +1,9 @@
+---
+Name: kalakotra-sitespider-routes
+After:
+  - '#rootroutes'
+  - '#coreroutes'
+---
+SilverStripe\Control\Director:
+  rules:
+    'audit-report/$Token': 'Kalakotra\SiteSpider\Controllers\AuditReportController'

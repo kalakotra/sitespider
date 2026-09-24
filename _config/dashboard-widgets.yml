@@ -1,0 +1,22 @@
+---
+Name: sitespider-dashboard
+After:
+  - '#sitespider'
+  - '#dashboard'
+
+---
+# ─── SiteSpider Dashboard Widget Registration ──────────────────────────────────
+# Automatski registrira SiteSpider widget u kalakotra/silverstripe-dashboard.
+# Zahtijeva: kalakotra/silverstripe-dashboard ^1.0
+#
+# Redoslijed prikaza (order property na widgetu):
+#   20  SiteSpiderWidget  — Header sa zadnjom sesijom + 3 KPI pločice
+# ──────────────────────────────────────────────────────────────────────────────
+
+Kalakotra\Dashboard\Registry\DashboardRegistry:
+  widgets:
+    - Kalakotra\SiteSpider\Widget\SiteSpiderWidget
+
+# ─── Per-widget config overrides (mogu se pregaziti u app/_config) ─────────────
+Kalakotra\SiteSpider\Widget\SiteSpiderWidget:
+  cache_lifetime: 30          # Kratko jer se sesija mijenja dok je crawl aktivan

@@ -1,0 +1,484 @@
+/**
+ * spider-dashboard.css
+ * Kalakotra SiteSpider — CMS Dashboard Styles
+ *
+ * Injected into the SilverStripe admin via Requirements::css().
+ * All selectors are prefixed with .kss- to avoid conflicts with SS admin CSS.
+ */
+
+/* ── Root variables ─────────────────────────────────────────────────────────── */
+:root {
+    --kss-bg:         #080d18;
+    --kss-surface:    #0d1425;
+    --kss-surface2:   #0a1020;
+    --kss-border:     #1a2438;
+    --kss-border2:    #1e3050;
+    --kss-text:       #c9d1e8;
+    --kss-muted:      #4a6080;
+    --kss-accent:     #0066ff;
+    --kss-ok:         #10b981;
+    --kss-redirect:   #f59e0b;
+    --kss-broken:     #ef4444;
+    --kss-orphan:     #8b5cf6;
+    --kss-warning:    #ec4899;
+    --kss-sitemap:    #38bdf8;
+    --kss-radius:     10px;
+    --kss-radius-sm:  6px;
+    --kss-font:       'DM Mono', 'Fira Mono', 'Courier New', monospace;
+}
+
+/* ── Dashboard wrapper ──────────────────────────────────────────────────────── */
+#kss-spider-dashboard {
+    margin: 0 0 24px 0;
+    font-family: var(--kss-font);
+    font-size: 12px;
+    color: var(--kss-text);
+}
+
+/* ── Session selector ───────────────────────────────────────────────────────── */
+.kss-selector-wrap {
+    margin-bottom: 14px;
+}
+
+.kss-session-select {
+    background: var(--kss-surface);
+    border: 1px solid var(--kss-border2);
+    border-radius: var(--kss-radius-sm);
+    color: var(--kss-text);
+    font-family: var(--kss-font);
+    font-size: 12px;
+    padding: 7px 12px;
+    min-width: 320px;
+    outline: none;
+    cursor: pointer;
+    transition: border-color 0.15s;
+}
+
+.kss-session-select:hover,
+.kss-session-select:focus {
+    border-color: var(--kss-accent);
+}
+
+.kss-session-select option {
+    background: var(--kss-surface);
+    color: var(--kss-text);
+}
+
+/* ── Loading / error / empty states ────────────────────────────────────────── */
+.kss-loading,
+.kss-error,
+.kss-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    min-height: 120px;
+    color: var(--kss-muted);
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    background: var(--kss-surface);
+    border: 1px solid var(--kss-border);
+    border-radius: var(--kss-radius);
+    padding: 24px;
+    margin-bottom: 8px;
+}
+
+.kss-error {
+    color: var(--kss-broken);
+    border-color: #ef444422;
+}
+
+.kss-spinner {
+    width: 24px;
+    height: 24px;
+    border: 2px solid var(--kss-border2);
+    border-top-color: var(--kss-accent);
+    border-radius: 50%;
+    animation: kss-spin 0.75s linear infinite;
+    flex-shrink: 0;
+}
+
+@keyframes kss-spin {
+    to { transform: rotate(360deg); }
+}
+
+/* ── Stats bar ──────────────────────────────────────────────────────────────── */
+.kss-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 10px;
+    margin-bottom: 12px;
+}
+
+.kss-stat {
+    background: var(--kss-surface);
+    border: 1px solid var(--kss-border);
+    border-radius: var(--kss-radius);
+    padding: 12px 14px;
+    position: relative;
+    overflow: hidden;
+    transition: border-color 0.2s, transform 0.1s;
+    cursor: pointer;
+}
+
+.kss-stat:hover {
+    transform: translateY(-1px);
+}
+
+.kss-stat::after {
+    content: '';
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 2px;
+}
+
+.kss-stat .kss-stat-value {
+    display: block;
+    font-size: 26px;
+    font-weight: 800;
+    line-height: 1;
+    color: #60a5fa;
+    margin-bottom: 4px;
+}
+
+.kss-stat .kss-stat-label {
+    display: block;
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    color: var(--kss-muted);
+}
+
+/* Variant colours */
+.kss-stat--broken  { border-color: #ef444422; }
+.kss-stat--broken  .kss-stat-value { color: var(--kss-broken); }
+.kss-stat--broken::after { background: linear-gradient(90deg, var(--kss-broken), transparent); }
+.kss-stat--broken:hover  { border-color: #ef444466; }
+
+.kss-stat--orphan  { border-color: #8b5cf622; }
+.kss-stat--orphan  .kss-stat-value { color: var(--kss-orphan); }
+.kss-stat--orphan::after { background: linear-gradient(90deg, var(--kss-orphan), transparent); }
+.kss-stat--orphan:hover  { border-color: #8b5cf666; }
+
+.kss-stat--warning { border-color: #ec489922; }
+.kss-stat--warning .kss-stat-value { color: var(--kss-warning); }
+.kss-stat--warning::after { background: linear-gradient(90deg, var(--kss-warning), transparent); }
+.kss-stat--warning:hover  { border-color: #ec489966; }
+
+.kss-stat--redirect { border-color: #f59e0b22; }
+.kss-stat--redirect .kss-stat-value { color: var(--kss-redirect); }
+.kss-stat--redirect::after { background: linear-gradient(90deg, var(--kss-redirect), transparent); }
+.kss-stat--redirect:hover  { border-color: #f59e0b66; }
+
+/* New stat variants */
+.kss-stat--noindex { border-color: #f9731622; }
+.kss-stat--noindex .kss-stat-value { color: #f97316; }
+.kss-stat--noindex::after { background: linear-gradient(90deg, #f97316, transparent); }
+.kss-stat--noindex:hover  { border-color: #f9731666; }
+
+.kss-stat--http { border-color: #ef444422; }
+.kss-stat--http .kss-stat-value { color: #f87171; }
+.kss-stat--http::after { background: linear-gradient(90deg, #f87171, transparent); }
+.kss-stat--http:hover  { border-color: #ef444466; }
+
+.kss-stat--og { border-color: #38bdf822; }
+.kss-stat--og .kss-stat-value { color: var(--kss-sitemap); }
+.kss-stat--og::after { background: linear-gradient(90deg, var(--kss-sitemap), transparent); }
+.kss-stat--og:hover  { border-color: #38bdf866; }
+
+.kss-stat--ai { border-color: #10b98122; }
+.kss-stat--ai .kss-stat-value { color: var(--kss-ok); }
+.kss-stat--ai::after { background: linear-gradient(90deg, var(--kss-ok), transparent); }
+.kss-stat--ai:hover  { border-color: #10b98166; }
+
+/* ── Filter bar ─────────────────────────────────────────────────────────────── */
+.kss-filters {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+}
+
+.kss-filter {
+    background: transparent;
+    border: 1px solid var(--kss-border);
+    border-radius: var(--kss-radius-sm);
+    color: var(--kss-muted);
+    font-family: var(--kss-font);
+    font-size: 11px;
+    letter-spacing: 0.02em;
+    padding: 5px 12px;
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+}
+
+.kss-filter:hover {
+    border-color: var(--kss-accent);
+    color: var(--kss-text);
+}
+
+.kss-filter--active {
+    background: #0066ff22;
+    border-color: var(--kss-accent);
+    color: var(--kss-accent);
+}
+
+/* Filter variant active states */
+.kss-filter--broken.kss-filter--active   { background: #ef444422; border-color: var(--kss-broken);   color: var(--kss-broken); }
+.kss-filter--orphan.kss-filter--active   { background: #8b5cf622; border-color: var(--kss-orphan);   color: var(--kss-orphan); }
+.kss-filter--warning.kss-filter--active  { background: #ec489922; border-color: var(--kss-warning);  color: var(--kss-warning); }
+.kss-filter--redirect.kss-filter--active { background: #f59e0b22; border-color: var(--kss-redirect); color: var(--kss-redirect); }
+.kss-filter--noindex.kss-filter--active  { background: #f9731622; border-color: #f97316; color: #f97316; }
+.kss-filter--http.kss-filter--active     { background: #ef444422; border-color: var(--kss-broken); color: var(--kss-broken); }
+.kss-filter--og.kss-filter--active       { background: #38bdf822; border-color: var(--kss-sitemap); color: var(--kss-sitemap); }
+
+.kss-node-count {
+    margin-left: auto;
+    font-size: 10px;
+    color: #2a3a5a;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+}
+
+/* ── Graph + panel layout ───────────────────────────────────────────────────── */
+.kss-layout {
+    display: grid;
+    grid-template-columns: 1fr 280px;
+    gap: 12px;
+    margin-bottom: 10px;
+}
+
+/* ── Graph container ────────────────────────────────────────────────────────── */
+.kss-graph-wrap {
+    background: var(--kss-bg);
+    border: 1px solid var(--kss-border);
+    border-radius: var(--kss-radius);
+    overflow: hidden;
+    position: relative;
+    min-height: 420px;
+}
+
+.kss-graph-wrap svg {
+    display: block;
+}
+
+/* ── Detail panel ───────────────────────────────────────────────────────────── */
+.kss-panel {
+    background: var(--kss-surface);
+    border: 1px solid var(--kss-border);
+    border-radius: var(--kss-radius);
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    min-height: 300px;
+    overflow: hidden;
+}
+
+.kss-panel-empty {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    color: #2a3a5a;
+    text-align: center;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    line-height: 1.6;
+}
+
+.kss-panel-icon {
+    font-size: 28px;
+    opacity: 0.4;
+}
+
+.kss-panel-header {
+    border-bottom: 1px solid var(--kss-border);
+    padding-bottom: 12px;
+    margin-bottom: 12px;
+    border-left: 3px solid var(--kss-accent);
+    padding-left: 10px;
+}
+
+.kss-panel-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: #e2e8f0;
+    line-height: 1.3;
+    margin-bottom: 5px;
+    word-break: break-word;
+}
+
+.kss-panel-url {
+    font-size: 9px;
+    color: #2a4060;
+    word-break: break-all;
+    line-height: 1.5;
+}
+
+.kss-panel-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+
+.kss-panel-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 7px 0;
+    border-bottom: 1px solid #111d30;
+    font-size: 11px;
+}
+
+.kss-panel-row:last-child {
+    border-bottom: none;
+}
+
+.kss-panel-row-label {
+    color: var(--kss-muted);
+}
+
+.kss-panel-row-val {
+    font-weight: 600;
+    text-align: right;
+}
+
+.kss-panel-warning {
+    margin-top: 12px;
+    background: #1a0a18;
+    border: 1px solid #ec489944;
+    border-radius: var(--kss-radius-sm);
+    padding: 10px 12px;
+}
+
+.kss-panel-warning-title {
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--kss-warning);
+    letter-spacing: 0.06em;
+    margin-bottom: 5px;
+}
+
+.kss-panel-warning-body {
+    font-size: 10px;
+    color: #c084a0;
+    line-height: 1.6;
+}
+
+.kss-panel-open {
+    display: block;
+    margin-top: 14px;
+    text-align: center;
+    background: transparent;
+    border: 1px solid var(--kss-border2);
+    border-radius: var(--kss-radius-sm);
+    padding: 7px;
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    color: var(--kss-muted);
+    text-decoration: none;
+    transition: border-color 0.15s, color 0.15s;
+}
+
+.kss-panel-open:hover {
+    border-color: var(--kss-accent);
+    color: var(--kss-accent);
+    text-decoration: none;
+}
+
+/* ── Legend ─────────────────────────────────────────────────────────────────── */
+.kss-legend {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    background: rgba(8, 13, 24, 0.9);
+    border: 1px solid var(--kss-border);
+    border-radius: 8px;
+    padding: 8px 14px;
+    width: fit-content;
+    flex-wrap: wrap;
+}
+
+.kss-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 9px;
+    color: var(--kss-muted);
+    letter-spacing: 0.06em;
+    white-space: nowrap;
+}
+
+.kss-legend-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.kss-legend-note {
+    font-size: 9px;
+    color: #2a3a5a;
+    border-left: 1px solid var(--kss-border);
+    padding-left: 10px;
+    letter-spacing: 0.04em;
+}
+
+/* ── Tooltip ────────────────────────────────────────────────────────────────── */
+#kss-tooltip {
+    display: none;
+    position: fixed;
+    z-index: 99999;
+    background: #0a1020ee;
+    border: 1px solid #1e3050;
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-family: var(--kss-font);
+    font-size: 11px;
+    color: var(--kss-text);
+    line-height: 1.6;
+    pointer-events: none;
+    max-width: 260px;
+    backdrop-filter: blur(4px);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+}
+
+#kss-tooltip strong {
+    color: #e2e8f0;
+    display: block;
+    margin-bottom: 2px;
+}
+
+/* ── Responsive ─────────────────────────────────────────────────────────────── */
+@media (max-width: 1100px) {
+    .kss-layout {
+        grid-template-columns: 1fr;
+    }
+
+    .kss-panel {
+        min-height: auto;
+    }
+
+    .kss-stats {
+        grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+    }
+}
+
+@media (max-width: 700px) {
+    .kss-stats {
+        grid-template-columns: repeat(2, 1fr);
+    }
+
+    .kss-filters {
+        flex-wrap: wrap;
+    }
+
+    .kss-node-count {
+        width: 100%;
+        margin-left: 0;
+    }
+}

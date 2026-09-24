@@ -1,0 +1,24 @@
+{
+    "name": "kalakotra/sitespider",
+    "description": "Kalakotra SiteSpider — SEO crawler with sitemap seeding, link graph analysis and AI keyword cannibalization detection for SilverStripe 6.1",
+    "type": "silverstripe-vendormodule",
+    "require": {
+        "php": "^8.2",
+        "silverstripe/framework": "^6.1",
+        "guzzlehttp/guzzle": "^7.8",
+        "kalakotra/silverstripe-aigateway": "^1.0",
+        "kalakotra/silverstripe-dashboard": "^1.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Kalakotra\\SiteSpider\\": "src/"
+        }
+    },
+    "extra": {
+        "expose": [
+            "client"
+        ]
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}
