@@ -116,4 +116,4 @@ processTick()
 
 ## License
 
-Proprietary — Kalakotra d.o.o.
+Proprietary — Kalakotra
