@@ -8,6 +8,7 @@ use Kalakotra\SiteSpider\Services\AuditService;
 use Kalakotra\SiteSpider\Services\SpiderService;
 use Kalakotra\AIGateway\Services\AIGatewayService;
 use Kalakotra\AIGateway\Services\AIProviderRegistry;
+use Kalakotra\SiteSpider\Services\PageSpeedService;
 use GuzzleHttp\Client;
 use Psr\Log\LoggerInterface;
 use SilverStripe\Control\Director;
@@ -92,12 +93,19 @@ class SiteAuditSpiderTask extends BuildTask
             'logger' => $logger,
         ]);
 
+        /** @var PageSpeedService $pageSpeedService */
+        $pageSpeedService = Injector::inst()->createWithArgs(PageSpeedService::class, [
+            'httpClient' => $httpClient,
+            'logger'     => $logger,
+        ]);
+
         /** @var AuditService $service */
         $service = Injector::inst()->createWithArgs(AuditService::class, [
-            'spider' => $spiderService,
+            'spider'    => $spiderService,
             'aiGateway' => $aiGateway,
+            'pageSpeed' => $pageSpeedService,
             'httpClient' => $httpClient,
-            'logger' => $logger,
+            'logger'    => $logger,
         ]);
 
         // ── Optional: create a new session from CLI params ────────────────────

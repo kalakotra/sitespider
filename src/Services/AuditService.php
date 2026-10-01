@@ -9,6 +9,7 @@ use Kalakotra\AIGateway\Exceptions\AIProviderException;
 use Kalakotra\AIGateway\Services\AIGatewayService;
 use Kalakotra\SiteSpider\Models\AuditPage;
 use Kalakotra\SiteSpider\Models\AuditSession;
+use Kalakotra\SiteSpider\Models\AuditTask;
 use Psr\Log\LoggerInterface;
 use SilverStripe\Core\Config\Configurable;
 use SilverStripe\Core\Injector\Injectable;
@@ -60,6 +61,7 @@ class AuditService
     public function __construct(
         private readonly SpiderService    $spider,
         private readonly AIGatewayService $aiGateway,
+        private readonly PageSpeedService $pageSpeed,
         private readonly Client           $httpClient,
         private readonly LoggerInterface  $logger,
     ) {}
@@ -110,7 +112,7 @@ class AuditService
 
         // Update progress counter
         $session->CrawledPages = (int) $session->CrawledPages + 1;
-        $session->TotalPages   = AuditPage::get()->filter('AuditSessionID', $session->ID)->count();
+        $session->TotalPages   = AuditPage::get()->filter(['AuditSessionID' => $session->ID])->count();
         $session->CurrentPageID = 0;
         $session->write();
 
@@ -169,14 +171,14 @@ class AuditService
      */
     private function finaliseSession(AuditSession $session): string
     {
-        $pages = AuditPage::get()->filter('AuditSessionID', $session->ID);
+        $pages = AuditPage::get()->filter(['AuditSessionID' => $session->ID]);
 
         $session->Status      = 'completed';
         $session->FinishedAt  = date('Y-m-d H:i:s');
         $session->TotalPages  = $pages->count();
-        $session->CrawledPages= $pages->filter('IsCrawled', true)->count();
-        $session->TotalBroken = $pages->filter('HttpStatus', 404)->count();
-        $session->TotalOrphans= $pages->filter('IsOrphan', true)->count();
+        $session->CrawledPages= $pages->filter(['IsCrawled' => true])->count();
+        $session->TotalBroken = $pages->filter(['HttpStatus' => 404])->count();
+        $session->TotalOrphans= $pages->filter(['IsOrphan' => true])->count();
         $session->write();
 
         $this->logger->info(sprintf(
@@ -210,6 +212,10 @@ class AuditService
     {
         $this->logger->info("SiteSpider crawling [{$session->ID}]: {$page->URL}");
 
+        // ── Recrawl context (load BEFORE crawling to capture previous task state) ──
+        // $page->NeedsRecrawl is still true at this point — will be reset by generateTasks()
+        $recrawlCtx = $this->loadPreviousTaskContext($page);
+
         // ── Step 1: HTTP status ───────────────────────────────────────────────
         $check                = $this->spider->checkResponse($page->URL);
         $page->HttpStatus     = $check['status'];
@@ -233,7 +239,7 @@ class AuditService
 
                 $html = (string) $response->getBody();
 
-                $meta = $this->spider->extractMetadata($html);
+                $meta = $this->spider->extractMetadata($html, $page->URL);
 
                 $page->PageTitle              = $meta['title'];
                 $page->MetaDescription        = $meta['description'];
@@ -251,6 +257,18 @@ class AuditService
                 $page->OgTitle                = $meta['og_title'];
                 $page->OgDescription          = $meta['og_description'];
                 $page->OgImage                = $meta['og_image'];
+                // Extended SEO metrics
+                $page->H3Count              = $meta['h3_count'];
+                $page->H4Count              = $meta['h4_count'];
+                $page->H5Count              = $meta['h5_count'];
+                $page->H6Count              = $meta['h6_count'];
+                $page->HeadingOrderIssue    = $meta['heading_order_issue'];
+                $page->HasStructuredData    = $meta['has_structured_data'];
+                $page->StructuredDataTypes  = substr(implode(', ', $meta['structured_data_types']), 0, 512);
+                $page->StructuredDataErrors = substr($meta['structured_data_errors'], 0, 1000);
+                $page->HasViewportMeta      = $meta['has_viewport_meta'];
+                $page->HreflangCount        = $meta['hreflang_count'];
+                $page->ExternalLinksCount   = $meta['external_links_count'];
 
                 // Discover links and persist edges
                 try {
@@ -272,11 +290,13 @@ class AuditService
                 ));
 
                 if ($aiOnpage) {
-                    $this->analyzeOnPageSEO($page, $meta);
+                    $this->analyzeOnPageSEO($page, $meta, $recrawlCtx);
                 }
 
                 if ($aiCannibal && $meta['keywords']) {
-                    $this->analyzeKeywordCannibalization($page, $meta, $session->ID);
+                    $this->analyzeKeywordCannibalization($page, $meta, $session->ID, $recrawlCtx);
+                } elseif ($aiCannibal) {
+                    $page->KeywordCannibalizationWarning = null;
                 }
 
             } catch (\Throwable $e) {
@@ -284,8 +304,20 @@ class AuditService
             }
         }
 
+        // ── PSI Analysis (if enabled) ──────────────────────────────────────────────────────────────
+        if ($this->pageSpeed->isEnabled()) {
+            try {
+                $this->pageSpeed->analyse($page); // sets PSI_* fields, no write yet
+            } catch (\Throwable $e) {
+                $this->logger->warning("SiteSpider PSI error [{$page->URL}]: {$e->getMessage()}");
+            }
+        }
+
         $page->syncOrphanFlag();
         $page->write();
+
+        // ── Generate task checklist ───────────────────────────────────────────────────────────────
+        $this->generateTasks($page);
 
         // Optional polite delay (usually 0 in cron model)
         $delayMs = (int) self::config()->get('crawl_delay_ms');
@@ -306,7 +338,8 @@ class AuditService
     private function analyzeKeywordCannibalization(
         AuditPage $page,
         array     $meta,
-        int       $sessionId
+        int       $sessionId,
+        array     $recrawlCtx = []
     ): void {
         $currentKeywords = $meta['keywords'];
         $altTexts        = implode('; ', array_slice($meta['alt_texts'], 0, 10));
@@ -323,6 +356,7 @@ class AuditService
             ->limit(50); // cap context to last 50 pages to control token count
 
         if (!$crawledPages->exists()) {
+            $page->KeywordCannibalizationWarning = null;
             return; // Nothing to compare against yet
         }
 
@@ -333,6 +367,7 @@ class AuditService
                 . "  Keywords: {$crawled->BodyKeywords}\n\n";
         }
 
+        $recrawlSection = $this->buildRecrawlPromptSection($recrawlCtx);
         $prompt = <<<PROMPT
         You are an SEO expert auditing a website for keyword cannibalization.
 
@@ -345,6 +380,7 @@ class AuditService
 
         OTHER PAGES ALREADY CRAWLED IN THIS SESSION:
         {$previousContext}
+        {$recrawlSection}
         TASK:
         1. Does the current page compete for the same primary keyword(s) as any
            other page listed above? If yes, name the competing URL(s) and overlapping
@@ -361,6 +397,7 @@ class AuditService
             ]);
 
             $responseText = trim($aiResponse->content);
+            $page->KeywordCannibalizationWarning = null;
 
             if ($responseText !== 'NO_ISSUE' && strlen($responseText) > 5) {
                 $page->KeywordCannibalizationWarning = $responseText;
@@ -378,7 +415,7 @@ class AuditService
      * Comprehensive single-page SEO analysis covering all measurable on-page
      * and technical signals. Stores a structured report on AuditPage.
      */
-    private function analyzeOnPageSEO(AuditPage $page, array $meta): void
+    private function analyzeOnPageSEO(AuditPage $page, array $meta, array $recrawlCtx = []): void
     {
         $https        = $page->IsHttps        ? 'Yes' : 'No';
         $noindex      = $page->RobotsNoIndex  ? 'Yes' : 'No';
@@ -388,6 +425,8 @@ class AuditService
         $ogDesc       = $meta['og_description'] ?: '(missing)';
         $ogImage      = $meta['og_image']       ?: '(missing)';
         $altTexts     = implode('; ', array_slice($meta['alt_texts'], 0, 5));
+
+        $recrawlSection = $this->buildRecrawlPromptSection($recrawlCtx);
 
         $prompt = <<<PROMPT
         You are a senior SEO auditor. Analyse the following crawled page and produce a
@@ -447,7 +486,7 @@ class AuditService
 
         [PRIORITY FIXES]
         List the top 3 most impactful fixes for this specific page, numbered.
-
+        {$recrawlSection}
         Rules: under 350 words total. Be direct and specific. If a section has no issues, write "OK".
         PROMPT;
 
@@ -549,5 +588,247 @@ class AuditService
         )->value();
 
         return $max > 0 ? (int) round(($page->InboundLinksCount / $max) * 100) : 0;
+    }
+
+    // ── Recrawl context loader ─────────────────────────────────────────────────
+
+    /**
+     * Load previous task state for recrawl-aware AI analysis.
+     *
+     * Called BEFORE the new crawl starts so $page->NeedsRecrawl is still true.
+     * Returns empty array on first crawls — no context means standard AI prompts.
+     *
+     * @return array{is_recrawl: bool, resolved: array, ignored: array}|array{}
+     */
+    private function loadPreviousTaskContext(AuditPage $page): array
+    {
+        if (!$page->NeedsRecrawl) {
+            return []; // First crawl or not yet fully resolved
+        }
+
+        $resolved = [];
+        $ignored  = [];
+
+        foreach (AuditTask::get()->filter(['AuditPageID' => $page->ID, 'Status' => 'done']) as $task) {
+            $resolved[] = ['type' => (string) $task->Type, 'desc' => (string) $task->Description];
+        }
+
+        foreach (AuditTask::get()->filter(['AuditPageID' => $page->ID, 'Status' => 'ignored']) as $task) {
+            $ignored[] = ['type' => (string) $task->Type, 'desc' => (string) $task->Description];
+        }
+
+        if (empty($resolved) && empty($ignored)) {
+            return [];
+        }
+
+        $this->logger->info(sprintf(
+            'SiteSpider recrawl context loaded: %d resolved, %d ignored tasks for %s',
+            count($resolved),
+            count($ignored),
+            $page->URL
+        ));
+
+        return [
+            'is_recrawl' => true,
+            'resolved'   => $resolved,
+            'ignored'    => $ignored,
+        ];
+    }
+
+    private function buildRecrawlPromptSection(array $recrawlCtx): string
+    {
+        if (empty($recrawlCtx['is_recrawl'])) {
+            return '';
+        }
+
+        $section = "\nPREVIOUS AUDIT — RE-CRAWL VERIFICATION:\n";
+        foreach ($recrawlCtx['resolved'] ?? [] as $item) {
+            $section .= "User marked FIXED; verify against current page data: [{$item['type']}] {$item['desc']}\n";
+        }
+        foreach ($recrawlCtx['ignored'] ?? [] as $item) {
+            $section .= "User chose to IGNORE; do not report this issue again: [{$item['type']}] {$item['desc']}\n";
+        }
+        $section .= "Confirm each fixed issue as fixed or still present. Report newly detected issues only when supported by current page data.\n";
+
+        return $section;
+    }
+
+    // ── Task generation ──────────────────────────────────────────────────────────────────
+
+    /**
+     * Auto-generate AuditTask checklist items for a crawled page.
+     * Idempotent: existing 'open' tasks are deleted and regenerated each crawl.
+     * 'done' and 'ignored' tasks are preserved so user work is not lost.
+     */
+    private function generateTasks(AuditPage $page): void
+    {
+        // Suppress recrawl scheduling while task rows are being reconciled.
+        $page->IsCrawled = false;
+        $page->NeedsRecrawl = false;
+        $page->write();
+
+        // Remove previous open tasks only (preserve user-resolved tasks)
+        foreach (AuditTask::get()->filter(['AuditPageID' => $page->ID, 'Status' => 'open']) as $old) {
+            $old->delete();
+        }
+
+        $tasks = [];
+
+        if ($page->HttpStatus === 200) {
+
+            // ─ Title ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+            if (!(int) $page->TitleLength) {
+                $tasks[] = ['type' => 'missing_title', 'priority' => 'high',
+                    'desc' => 'Page has no <title> tag.'];
+            } elseif ((int) $page->TitleLength < 30) {
+                $tasks[] = ['type' => 'title_too_short', 'priority' => 'medium',
+                    'desc' => "Title is {$page->TitleLength} characters — minimum recommended is 30."];
+            } elseif ((int) $page->TitleLength > 60) {
+                $tasks[] = ['type' => 'title_too_long', 'priority' => 'medium',
+                    'desc' => "Title is {$page->TitleLength} characters — trim to 60 to avoid truncation in SERPs."];
+            }
+
+            // ─ Meta Description ─────────────────────────────────────────────────────────────────────────────────────
+            if (!(int) $page->MetaDescriptionLength) {
+                $tasks[] = ['type' => 'missing_meta', 'priority' => 'high',
+                    'desc' => 'No meta description found. Write a compelling 120–160 character summary.'];
+            } elseif ((int) $page->MetaDescriptionLength > 160) {
+                $tasks[] = ['type' => 'meta_too_long', 'priority' => 'low',
+                    'desc' => "Meta description is {$page->MetaDescriptionLength} chars — trim to 160."];
+            }
+
+            // ─ H1 ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+            if (!(int) $page->H1Count) {
+                $tasks[] = ['type' => 'missing_h1', 'priority' => 'high',
+                    'desc' => 'Page has no H1 tag. Add exactly one H1 that describes the main topic.'];
+            } elseif ((int) $page->H1Count > 1) {
+                $tasks[] = ['type' => 'multiple_h1', 'priority' => 'medium',
+                    'desc' => "Page has {$page->H1Count} H1 tags — only one H1 is recommended per page."];
+            }
+
+            // ─ Heading order ────────────────────────────────────────────────────────────────────────────────────────
+            if ($page->HeadingOrderIssue) {
+                $tasks[] = ['type' => 'heading_order', 'priority' => 'low',
+                    'desc' => 'Heading hierarchy skips levels (e.g. H1 → H3 without H2). Fix the heading structure for accessibility and SEO.'];
+            }
+
+            // ─ Images ────────────────────────────────────────────────────────────────────────────────────────────────
+            if ((int) $page->ImagesWithoutAlt > 0) {
+                $tasks[] = ['type' => 'missing_alt', 'priority' => 'medium',
+                    'desc' => "{$page->ImagesWithoutAlt} image(s) missing alt text. Add descriptive alt attributes."];
+            }
+
+            // ─ Response time ────────────────────────────────────────────────────────────────────────────────────────
+            if ((float) $page->ResponseTimeMs > 2000) {
+                $ms = (int) round((float) $page->ResponseTimeMs);
+                $tasks[] = ['type' => 'slow_response', 'priority' => 'high',
+                    'desc' => "Server response time is {$ms}ms — target is under 2000ms. Review caching and server config."];
+            }
+
+            // ─ Core Web Vitals ─────────────────────────────────────────────────────────────────────────────────────
+            if ($page->CWV_LCP_Rating === 'poor') {
+                $tasks[] = ['type' => 'cwv_poor_lcp', 'priority' => 'high',
+                    'desc' => "LCP is {$page->CWV_LCP}ms (Poor >4000ms). Optimise the largest element, use CDN, eliminate render-blocking resources."];
+            }
+            if ($page->CWV_CLS_Rating === 'poor') {
+                $tasks[] = ['type' => 'cwv_poor_cls', 'priority' => 'high',
+                    'desc' => "CLS score is {$page->CWV_CLS} (Poor >0.25). Fix layout shifts: set size attributes on images/ads, avoid injecting content above the fold."];
+            }
+            if ($page->CWV_INP_Rating === 'poor') {
+                $tasks[] = ['type' => 'cwv_poor_inp', 'priority' => 'high',
+                    'desc' => "INP is {$page->CWV_INP}ms (Poor >500ms). Reduce long JS tasks, yield to main thread, use web workers."];
+            }
+
+            // ─ AI Cannibalization ──────────────────────────────────────────────────────────────────────────────────
+            if ($page->KeywordCannibalizationWarning) {
+                $tasks[] = ['type' => 'cannibalization', 'priority' => 'high',
+                    'desc' => (string) $page->KeywordCannibalizationWarning];
+            }
+
+            // ─ Robots ────────────────────────────────────────────────────────────────────────────────────────────────
+            if ($page->RobotsNoIndex) {
+                $tasks[] = ['type' => 'noindex', 'priority' => 'high',
+                    'desc' => 'Page has robots noindex — it will not appear in search results. Verify this is intentional.'];
+            }
+
+            // ─ Orphan ────────────────────────────────────────────────────────────────────────────────────────────────
+            if ($page->IsOrphan) {
+                $tasks[] = ['type' => 'orphan', 'priority' => 'medium',
+                    'desc' => 'No internal links point to this page. Add at least one contextual link from a related page.'];
+            }
+
+            // ─ Structured Data ────────────────────────────────────────────────────────────────────────────────────────
+            if (!$page->HasStructuredData) {
+                $tasks[] = ['type' => 'missing_structured_data', 'priority' => 'low',
+                    'desc' => 'No JSON-LD structured data detected. Add Schema.org markup (Article, Product, BreadcrumbList…) to enable rich results in Google Search.'];
+            }
+
+            // ─ Viewport ─────────────────────────────────────────────────────────────────────────────────────────────
+            if (!$page->HasViewportMeta) {
+                $tasks[] = ['type' => 'no_viewport', 'priority' => 'high',
+                    'desc' => 'Missing <meta name="viewport"> — page will not render correctly on mobile devices.'];
+            }
+
+            // ─ PageSpeed Insights ──────────────────────────────────────────────────────────────────────────────────
+            if ($page->PSI_MobileScore && (int) $page->PSI_MobileScore < 50) {
+                $tasks[] = ['type' => 'low_psi_mobile', 'priority' => 'high',
+                    'desc' => "Mobile PageSpeed score is {$page->PSI_MobileScore}/100. Run Lighthouse for a detailed improvement plan."];
+            }
+            if ($page->PSI_DesktopScore && (int) $page->PSI_DesktopScore < 70) {
+                $tasks[] = ['type' => 'low_psi_desktop', 'priority' => 'medium',
+                    'desc' => "Desktop PageSpeed score is {$page->PSI_DesktopScore}/100."];
+            }
+
+        } elseif ($page->HttpStatus === 404) {
+            $tasks[] = ['type' => 'broken_link', 'priority' => 'high',
+                'desc' => 'Page returns 404 Not Found. Fix the page or create a 301 redirect to the correct URL.'];
+
+        } elseif ($page->HttpStatus >= 301 && $page->HttpStatus <= 308) {
+            $redirect = $page->RedirectTarget ?: '(unknown destination)';
+            $tasks[] = ['type' => 'redirect', 'priority' => 'low',
+                'desc' => "Page redirects to {$redirect}. Update all internal links to point directly to the destination to save a redirect hop."];
+        }
+
+        foreach ($tasks as $taskData) {
+            $ignoredTask = AuditTask::get()->filter([
+                'AuditPageID' => $page->ID,
+                'Type' => $taskData['type'],
+                'Status' => 'ignored',
+            ])->first();
+            if ($ignoredTask) {
+                continue;
+            }
+
+            $resolvedTask = AuditTask::get()->filter([
+                'AuditPageID' => $page->ID,
+                'Type' => $taskData['type'],
+                'Status' => 'done',
+            ])->first();
+            if ($resolvedTask) {
+                $resolvedTask->Description = $taskData['desc'];
+                $resolvedTask->Priority = $taskData['priority'];
+                $resolvedTask->Status = 'open';
+                $resolvedTask->write();
+                continue;
+            }
+
+            $task              = AuditTask::create();
+            $task->AuditPageID = $page->ID;
+            $task->Type        = $taskData['type'];
+            $task->Priority    = $taskData['priority'];
+            $task->Description = $taskData['desc'];
+            $task->Status      = 'open';
+            $task->write(); // triggers AuditTask::onAfterWrite → syncPageCounters()
+        }
+
+        $page->IsCrawled = true;
+        $page->NeedsRecrawl = false;
+        $page->write();
+
+        $this->logger->info(sprintf(
+            'SiteSpider: %d tasks generated for %s',
+            count($tasks),
+            $page->URL
+        ));
     }
 }

@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Kalakotra\SiteSpider\Models;
 
+
 use SilverStripe\Control\Director;
+use SilverStripe\Forms\DropdownField;
 use SilverStripe\Forms\FieldList;
 use SilverStripe\Forms\GridField\GridField;
 use SilverStripe\Forms\GridField\GridFieldConfig_RecordViewer;
@@ -15,7 +17,6 @@ use SilverStripe\Forms\GridField\GridFieldPaginator;
 use SilverStripe\Forms\GridField\GridFieldSortableHeader;
 use SilverStripe\Forms\ReadonlyField;
 use SilverStripe\Forms\TextField;
-use SilverStripe\Forms\DropdownField;
 use SilverStripe\ORM\DataObject;
 use SilverStripe\ORM\HasManyList;
 
@@ -66,6 +67,9 @@ class AuditSession extends DataObject
         'StartedAt'   => 'Datetime',
         'FinishedAt'  => 'Datetime',
         'ShareToken'  => 'Varchar(64)',
+
+        // Unique token per session — used as tracker.js ?token= parameter
+        'ApiToken' => 'Varchar(128)',
     ];
 
     private static array $has_one = [
@@ -107,6 +111,10 @@ class AuditSession extends DataObject
         parent::onBeforeWrite();
         if (!$this->ShareToken) {
             $this->ShareToken = bin2hex(random_bytes(16));
+        }
+
+        if (!$this->ApiToken) {
+            $this->ApiToken = bin2hex(random_bytes(24)); // 48-char hex token
         }
     }
 

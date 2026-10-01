@@ -23,11 +23,18 @@ SilverStripe\Core\Injector\Injector:
       httpClient: '%$GuzzleHttp\Client'
       logger: '%$Psr\Log\LoggerInterface'
 
+  Kalakotra\SiteSpider\Services\PageSpeedService:
+    class: Kalakotra\SiteSpider\Services\PageSpeedService
+    constructor:
+      httpClient: '%$GuzzleHttp\Client'
+      logger:     '%$Psr\Log\LoggerInterface'
+
   Kalakotra\SiteSpider\Services\AuditService:
     class: Kalakotra\SiteSpider\Services\AuditService
     constructor:
       spider:    '%$Kalakotra\SiteSpider\Services\SpiderService'
       aiGateway: '%$Kalakotra\AIGateway\Services\AIGatewayService'
+      pageSpeed: '%$Kalakotra\SiteSpider\Services\PageSpeedService'
       httpClient: '%$GuzzleHttp\Client'
       logger:    '%$Psr\Log\LoggerInterface'
 

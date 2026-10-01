@@ -1,0 +1,36 @@
+---
+Name: kalakotra-sitespider-beacon
+After:
+  - kalakotra-sitespider
+---
+# ── Routing ───────────────────────────────────────────────────────────────────
+
+SilverStripe\Control\Director:
+  rules:
+    'api/sitespider/beacon':
+      Controller: Kalakotra\SiteSpider\Controllers\BeaconController
+    'api/sitespider/beacon//':
+      Controller: Kalakotra\SiteSpider\Controllers\BeaconController
+
+# ── BeaconController config ───────────────────────────────────────────────────
+
+Kalakotra\SiteSpider\Controllers\BeaconController:
+  # Minimum real-user samples before p75 is written to AuditPage
+  min_samples: 10
+  max_errors_stored: 5
+  max_broken_stored: 20
+
+# ── AuditPage CWV fields (added via $db extension) ───────────────────────────
+# These are declared directly on AuditPage::$db in the updated model.
+# Listed here for documentation purposes only.
+#
+# CWV_LCP          Int      p75 LCP in ms
+# CWV_CLS          Decimal  p75 CLS score
+# CWV_INP          Int      p75 INP in ms
+# CWV_LCP_Rating   Varchar  good|needs-improvement|poor
+# CWV_CLS_Rating   Varchar  good|needs-improvement|poor
+# CWV_INP_Rating   Varchar  good|needs-improvement|poor
+# CWV_SampleCount  Int      Number of beacons aggregated
+
+# ── AuditSession ApiToken (added to model $db) ────────────────────────────────
+# ApiToken  Varchar(128)  Unique token per session, used by tracker.js

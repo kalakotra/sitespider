@@ -5,9 +5,15 @@ declare(strict_types=1);
 namespace Kalakotra\SiteSpider\Models;
 
 use SilverStripe\Forms\FieldList;
+use SilverStripe\Forms\GridField\GridField;
+use SilverStripe\Forms\GridField\GridFieldConfig_RecordViewer;
+use SilverStripe\Forms\GridField\GridFieldDataColumns;
+use SilverStripe\Forms\GridField\GridFieldPaginator;
+use SilverStripe\Forms\GridField\GridFieldSortableHeader;
 use SilverStripe\Forms\ReadonlyField;
 use SilverStripe\Forms\TextareaField;
 use SilverStripe\ORM\DataObject;
+use SilverStripe\ORM\HasManyList;
 use SilverStripe\ORM\ManyManyList;
 
 /**
@@ -58,6 +64,8 @@ use SilverStripe\ORM\ManyManyList;
  *
  * @method ManyManyList LinksTo()
  * @method ManyManyList LinkedFrom()
+ * @method HasManyList  BeaconLogs()
+ * @method HasManyList  Tasks()
  */
 class AuditPage extends DataObject
 {
@@ -107,6 +115,53 @@ class AuditPage extends DataObject
 
         // ── AI Analysis ──────────────────────────────────────────────────────
         'AiOnPageReport' => 'Text',           // comprehensive single-page SEO analysis
+
+        // ── Core Web Vitals (p75, from BeaconLog aggregation) ────────────────────
+        'CWV_LCP'          => 'Int',            // Largest Contentful Paint ms
+        'CWV_CLS'          => 'Decimal(6,4)',   // Cumulative Layout Shift
+        'CWV_INP'          => 'Int',            // Interaction to Next Paint ms
+        'CWV_LCP_Rating'   => "Enum('good,needs-improvement,poor', null)",
+        'CWV_CLS_Rating'   => "Enum('good,needs-improvement,poor', null)",
+        'CWV_INP_Rating'   => "Enum('good,needs-improvement,poor', null)",
+        'CWV_SampleCount'  => 'Int',            // Real user samples aggregated
+
+        // ── Heading structure ────────────────────────────────────────────────────
+        'H3Count'           => 'Int',
+        'H4Count'           => 'Int',
+        'H5Count'           => 'Int',
+        'H6Count'           => 'Int',
+        'HeadingOrderIssue' => 'Boolean',       // true if heading levels skip (e.g. H1→H3)
+
+        // ── Structured Data ──────────────────────────────────────────────────────
+        'HasStructuredData'    => 'Boolean',
+        'StructuredDataTypes'  => 'Varchar(512)', // comma-separated: "Article, BreadcrumbList"
+        'StructuredDataErrors' => 'Text',
+
+        // ── Additional Technical ──────────────────────────────────────────────────
+        'HasViewportMeta'    => 'Boolean',      // <meta name="viewport"> present
+        'HreflangCount'      => 'Int',          // number of hreflang alternate tags
+        'ExternalLinksCount' => 'Int',          // outbound external link count
+
+        // ── Task checklist ────────────────────────────────────────────────────────
+        'NeedsRecrawl' => 'Boolean',            // true when actionable tasks are resolved and at least one is done
+        'TasksTotal'   => 'Int',
+        'TasksDone'    => 'Int',
+
+        // ── Google PageSpeed Insights (Lighthouse lab data) ────────────────────────
+        'PSI_MobileScore'  => 'Int',            // Lighthouse performance score 0-100
+        'PSI_DesktopScore' => 'Int',
+        'PSI_FCP'          => 'Int',            // First Contentful Paint (ms)
+        'PSI_LCP'          => 'Int',            // Largest Contentful Paint (ms)
+        'PSI_TBT'          => 'Int',            // Total Blocking Time (ms)
+        'PSI_CLS'          => 'Decimal(6,4)',   // Cumulative Layout Shift
+        'PSI_CheckedAt'    => 'Datetime',
+
+        // ── Google Search Console ──────────────────────────────────────────────────
+        'GSC_Impressions'  => 'Int',
+        'GSC_Clicks'       => 'Int',
+        'GSC_CTR'          => 'Decimal(5,2)',   // Click-through rate (%)
+        'GSC_Position'     => 'Decimal(5,1)',   // Average search position
+        'GSC_CheckedAt'    => 'Datetime',
     ];
 
     private static array $has_one = [
@@ -125,7 +180,12 @@ class AuditPage extends DataObject
         'LinkedFrom' => AuditPage::class . '.LinksTo',
     ];
 
-    private static array $cascade_deletes = ['LinksTo', 'LinkedFrom'];
+    private static array $has_many = [
+        'BeaconLogs' => BeaconLog::class . '.AuditPage',
+        'Tasks'      => AuditTask::class . '.AuditPage',
+    ];
+
+    private static array $cascade_deletes = ['LinksTo', 'LinkedFrom', 'BeaconLogs', 'Tasks'];
 
     private static array $summary_fields = [
         'URL'                      => 'URL',
@@ -143,6 +203,17 @@ class AuditPage extends DataObject
         'CannibalizationBadge'     => 'AI ⚡',
         'AiOnPageBadge'            => 'AI On-Page',
         'CrawledAt'                => 'Crawled',
+
+        'CWV_LCP'         => 'LCP (ms)',
+        'CWV_CLS'         => 'CLS',
+        'CWV_INP'         => 'INP (ms)',
+        'CWV_LCP_Rating'   => 'LCP ✓',
+        'CWV_SampleCount'  => 'Samples',
+        // PSI + Tasks
+        'PSI_MobileScore'  => 'PSI Mobile',
+        'PSI_DesktopScore' => 'PSI Desktop',
+        'TaskProgressBadge'=> 'Tasks',
+        'NeedsRecrawl'     => 'Recrawl?',
     ];
 
     private static array $searchable_fields = [
@@ -211,6 +282,49 @@ class AuditPage extends DataObject
             TextareaField::create('BodyKeywords', 'Extracted Keywords')->setReadonly(true),
             ReadonlyField::create('CrawledAt', 'Crawled At'),
         ]);
+
+        $fields->addFieldsToTab('Root.Structure', [
+            ReadonlyField::create('H1Count', 'H1 Tags'),
+            ReadonlyField::create('H2Count', 'H2 Tags'),
+            ReadonlyField::create('H3Count', 'H3 Tags'),
+            ReadonlyField::create('H4Count', 'H4 Tags'),
+            ReadonlyField::create('H5Count', 'H5 Tags'),
+            ReadonlyField::create('H6Count', 'H6 Tags'),
+            ReadonlyField::create('HeadingOrderIssueBadge', 'Heading Order'),
+            ReadonlyField::create('StructuredDataBadge', 'Structured Data'),
+            ReadonlyField::create('StructuredDataTypes', 'Schema Types'),
+            TextareaField::create('StructuredDataErrors', 'Structured Data Errors')
+                ->setRows(3)->setReadonly(true),
+            ReadonlyField::create('HasViewportMetaBadge', 'Viewport Meta'),
+            ReadonlyField::create('HreflangCount', 'Hreflang Tags'),
+            ReadonlyField::create('ExternalLinksCount', 'External Links'),
+        ]);
+
+        $fields->addFieldsToTab('Root.PageSpeed', [
+            ReadonlyField::create('PSIMobileBadge', 'Mobile Score'),
+            ReadonlyField::create('PSI_MobileScore', 'Mobile Score (raw)'),
+            ReadonlyField::create('PSI_DesktopScore', 'Desktop Score'),
+            ReadonlyField::create('PSI_FCP', 'FCP (ms)'),
+            ReadonlyField::create('PSI_LCP', 'LCP (ms)'),
+            ReadonlyField::create('PSI_TBT', 'Total Blocking Time (ms)'),
+            ReadonlyField::create('PSI_CLS', 'CLS'),
+            ReadonlyField::create('PSI_CheckedAt', 'Last Checked'),
+        ]);
+
+        $fields->addFieldsToTab('Root.SearchConsole', [
+            ReadonlyField::create('GSC_Impressions', 'Impressions'),
+            ReadonlyField::create('GSC_Clicks', 'Clicks'),
+            ReadonlyField::create('GSC_CTR', 'CTR (%)'),
+            ReadonlyField::create('GSC_Position', 'Avg. Position'),
+            ReadonlyField::create('GSC_CheckedAt', 'Last Synced'),
+        ]);
+
+        if ($this->isInDB()) {
+            $fields->addFieldsToTab('Root.Tasks', [
+                ReadonlyField::create('TaskProgressBadge', 'Task Progress'),
+                $this->buildTasksGrid(),
+            ]);
+        }
 
         return $fields;
     }
@@ -359,5 +473,100 @@ class AuditPage extends DataObject
     public function isRedirect(): bool
     {
         return $this->HttpStatus >= 301 && $this->HttpStatus <= 308;
+    }
+
+    // ── Add virtual getter for CMS display ───────────────────────────────────────
+
+    public function getCWVBadge(): string
+    {
+        if (!$this->CWV_SampleCount) return '—';
+
+        $ratings = [$this->CWV_LCP_Rating, $this->CWV_CLS_Rating, $this->CWV_INP_Rating];
+        $ratings = array_filter($ratings);
+
+        if (in_array('poor', $ratings))             return '✗ Poor';
+        if (in_array('needs-improvement', $ratings)) return '~ Needs work';
+        return '✓ Good';
+    }
+
+    // ── Task checklist helpers ─────────────────────────────────────────────────
+
+    /**
+     * Recompute TasksTotal, TasksDone and NeedsRecrawl from Tasks() relation.
+     * Does NOT call write() — caller is responsible.
+     */
+    public function syncTaskCounters(): void
+    {
+        $tasks            = $this->Tasks();
+        $total            = $tasks->count();
+        $done             = $tasks->filter(['Status' => 'done'])->count();
+        $ignored          = $tasks->filter(['Status' => 'ignored'])->count();
+        $this->TasksTotal   = $total;
+        $this->TasksDone    = $done;
+        $this->NeedsRecrawl = ($total > 0 && $done > 0 && $done + $ignored === $total
+            && ($this->IsCrawled || $this->NeedsRecrawl));
+    }
+
+    public function getTaskProgressBadge(): string
+    {
+        $total = (int) $this->TasksTotal;
+        if (!$total) return '—';
+        $pct = (int) round(((int) $this->TasksDone / $total) * 100);
+        return "{$this->TasksDone}/{$total} ({$pct}%)";
+    }
+
+    // ── PageSpeed helpers ─────────────────────────────────────────────────────
+
+    public function getPSIMobileBadge(): string
+    {
+        $s = (int) $this->PSI_MobileScore;
+        if (!$s) return '—';
+        return match (true) {
+            $s >= 90 => "✓ {$s}",
+            $s >= 50 => "~ {$s}",
+            default  => "✗ {$s}",
+        };
+    }
+
+    // ── Structure helpers ─────────────────────────────────────────────────────
+
+    public function getStructuredDataBadge(): string
+    {
+        if (!$this->HasStructuredData) return '✗ None';
+        $types = $this->StructuredDataTypes ?: 'Detected';
+        return "✓ {$types}";
+    }
+
+    public function getHeadingOrderIssueBadge(): string
+    {
+        return $this->HeadingOrderIssue ? '⚠ Issues detected' : '✓ OK';
+    }
+
+    public function getHasViewportMetaBadge(): string
+    {
+        return $this->HasViewportMeta ? '✓ Present' : '✗ Missing';
+    }
+
+    // ── GridField builder ─────────────────────────────────────────────────────
+
+    private function buildTasksGrid(): GridField
+    {
+        $config = GridFieldConfig_RecordViewer::create();
+        $config->addComponent(new GridFieldSortableHeader());
+        $config->addComponent(new GridFieldPaginator(50));
+
+        /** @var GridFieldDataColumns $cols */
+        $cols = $config->getComponentByType(GridFieldDataColumns::class);
+        if ($cols) {
+            $cols->setDisplayFields([
+                'TypeLabel'     => 'Issue',
+                'PriorityBadge' => 'Priority',
+                'Description'   => 'Description',
+                'Status'        => 'Status',
+                'ResolvedAt'    => 'Resolved',
+            ]);
+        }
+
+        return GridField::create('Tasks', 'Audit Tasks', $this->Tasks(), $config);
     }
 }

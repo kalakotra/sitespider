@@ -1,0 +1,27 @@
+---
+Name: kalakotra-sitespider-api
+After:
+  - kalakotra-sitespider
+---
+
+# ── Google PageSpeed Insights API ─────────────────────────────────────────────
+#
+# Free API key: https://developers.google.com/speed/docs/insights/v5/get-started
+# Free quota: 25,000 requests/day
+# Each crawled page = 2 PSI requests (mobile + desktop)
+#
+# To enable, add to app/_config/sitespider.yml:
+#   Kalakotra\SiteSpider\Services\PageSpeedService:
+#     enabled: true
+#     api_key: 'AIzaSy...'
+
+Kalakotra\SiteSpider\Services\PageSpeedService:
+  enabled: false
+  api_key: ''
+  timeout: 60
+
+# ── Google Search Console API ─────────────────────────────────────────────────
+#
+# GSC requires OAuth2 — fields are available on AuditPage (GSC_Impressions,
+# GSC_Clicks, GSC_CTR, GSC_Position, GSC_CheckedAt) for future integration.
+# TODO: SearchConsoleService (OAuth2 flow)

@@ -298,7 +298,7 @@ class SpiderService
      *   og_title: string, og_description: string, og_image: string
      * }
      */
-    public function extractMetadata(string $html): array
+    public function extractMetadata(string $html, string $baseUrl = ''): array
     {
         $dom = new \DOMDocument();
         libxml_use_internal_errors(true);
@@ -391,6 +391,130 @@ class SpiderService
             'og_title'                 => substr($ogTitle, 0, 512),
             'og_description'           => $ogDesc,
             'og_image'                 => substr($ogImage, 0, 2048),
+        ];
+
+        // NOTE: new extractions below use same $dom / $xpath / $body from above
+
+        // ── H3-H6 counts ───────────────────────────────────────────────────────────────────────────────────────────────
+        $h3Count = $xpath->query('//h3') ? $xpath->query('//h3')->length : 0;
+        $h4Count = $xpath->query('//h4') ? $xpath->query('//h4')->length : 0;
+        $h5Count = $xpath->query('//h5') ? $xpath->query('//h5')->length : 0;
+        $h6Count = $xpath->query('//h6') ? $xpath->query('//h6')->length : 0;
+
+        // ── Heading order analysis ─────────────────────────────────────────────────────────────────────────
+        $headingOrderIssue = false;
+        $allHeadings       = $xpath->query('//h1|//h2|//h3|//h4|//h5|//h6');
+        if ($allHeadings && $allHeadings->length > 1) {
+            $prevLevel = 0;
+            foreach ($allHeadings as $heading) {
+                $level = (int) substr($heading->tagName, 1);
+                if ($prevLevel > 0 && $level > $prevLevel + 1) {
+                    $headingOrderIssue = true;
+                    break;
+                }
+                $prevLevel = $level;
+            }
+        }
+
+        // ── Structured Data (JSON-LD + Microdata fallback) ───────────────────────────────────────
+        $hasStructuredData    = false;
+        $structuredDataTypes  = [];
+        $structuredDataErrors = '';
+
+        foreach ($xpath->query('//script[@type="application/ld+json"]') as $script) {
+            $raw = trim($script->textContent);
+            if (!$raw) {
+                continue;
+            }
+            $json = json_decode($raw, true);
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                $structuredDataErrors .= 'JSON-LD parse error: ' . json_last_error_msg() . '; ';
+                continue;
+            }
+            $hasStructuredData = true;
+            $items = isset($json['@graph']) ? $json['@graph'] : [$json];
+            foreach ($items as $item) {
+                foreach ((array) ($item['@type'] ?? []) as $t) {
+                    if ($t) {
+                        $structuredDataTypes[] = (string) $t;
+                    }
+                }
+            }
+        }
+
+        // Microdata fallback
+        if (!$hasStructuredData) {
+            $microdataNodes = $xpath->query('//*[@itemtype]');
+            if ($microdataNodes && $microdataNodes->length > 0) {
+                $hasStructuredData = true;
+                foreach ($microdataNodes as $node) {
+                    /** @var \DOMElement $node */
+                    $type = basename($node->getAttribute('itemtype'));
+                    if ($type) {
+                        $structuredDataTypes[] = $type;
+                    }
+                }
+            }
+        }
+
+        $structuredDataTypes = array_values(array_unique($structuredDataTypes));
+
+        // ── Viewport meta ───────────────────────────────────────────────────────────────────────────────────────────────
+        $hasViewportMeta = $xpath->query('//meta[@name="viewport"]')->length > 0;
+
+        // ── Hreflang ──────────────────────────────────────────────────────────────────────────────────────────────
+        $hreflangCount = $xpath->query('//link[@rel="alternate"][@hreflang]')->length;
+
+        // ── External links ─────────────────────────────────────────────────────────────────────────────────────────
+        $externalLinksCount = 0;
+        if ($baseUrl) {
+            $baseParsed = parse_url($baseUrl);
+            $baseHost   = strtolower($baseParsed['host'] ?? '');
+            if ($baseHost) {
+                foreach ($xpath->query('//a[@href]') as $anchor) {
+                    /** @var \DOMElement $anchor */
+                    $href = trim($anchor->getAttribute('href'));
+                    if (!str_starts_with($href, 'http://') && !str_starts_with($href, 'https://')) {
+                        continue;
+                    }
+                    $parsed = parse_url($href);
+                    if (strtolower($parsed['host'] ?? '') !== $baseHost) {
+                        $externalLinksCount++;
+                    }
+                }
+            }
+        }
+
+        return [
+            'title'                    => substr($title, 0, 512),
+            'description'              => $desc,
+            'h1'                       => substr($h1, 0, 512),
+            'keywords'                 => $keywords,
+            'alt_texts'                => $alts,
+            'robots_noindex'           => $noindex,
+            'robots_nofollow'          => $nofollow,
+            'canonical'                => substr($canonical, 0, 2048),
+            'title_length'             => strlen($title),
+            'meta_description_length'  => strlen($desc),
+            'h1_count'                 => $h1Count,
+            'h2_count'                 => $h2Count,
+            'word_count'               => $wordCount,
+            'images_without_alt'       => $imagesWithoutAlt,
+            'og_title'                 => substr($ogTitle, 0, 512),
+            'og_description'           => $ogDesc,
+            'og_image'                 => substr($ogImage, 0, 2048),
+            // Extended
+            'h3_count'                 => $h3Count,
+            'h4_count'                 => $h4Count,
+            'h5_count'                 => $h5Count,
+            'h6_count'                 => $h6Count,
+            'heading_order_issue'      => $headingOrderIssue,
+            'has_structured_data'      => $hasStructuredData,
+            'structured_data_types'    => $structuredDataTypes,
+            'structured_data_errors'   => $structuredDataErrors,
+            'has_viewport_meta'        => $hasViewportMeta,
+            'hreflang_count'           => $hreflangCount,
+            'external_links_count'     => $externalLinksCount,
         ];
     }
 
