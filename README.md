@@ -34,6 +34,19 @@ vendor/bin/sake dev/build flush=all
 
 The dispatcher checks due monitoring projects and recovers active sessions. QueuedJobs uses a serial queue runner by default. Shared `flock` locks prevent overlapping processes; each SiteSpider job processes one page, then schedules the next page after `page_delay_seconds` (60 seconds by default).
 
+### External HTTP scheduler (optional)
+
+If the host does not offer system cron, keep the CLI options above and configure an external scheduler such as cron-job.org to call:
+
+```text
+POST https://your-site.example/api/sitespider/cron
+Authorization: Bearer YOUR_LONG_RANDOM_SECRET
+```
+
+Set `SITESPIDER_CRON_TOKEN` in the hosting environment to the same randomly generated secret. Do not put the token in the URL. The endpoint returns `401` if the token is missing or invalid, takes a database advisory lock to avoid overlapping triggers, enqueues due projects/active sessions, and executes at most one ready queued job per request. Set the external scheduler interval to 1 minute or slower and its HTTP timeout long enough for one page crawl (allow at least 60 seconds when AI/PageSpeed calls are enabled). A `200` response with `status: idle` means there was no ready work; `status: processed` means one job ran; `status: busy` means another trigger is still active.
+
+This is an additional trigger only. The existing `SiteAuditSpiderTask` BuildTask and `ProcessJobQueueTask` worker remain available for manual use or a hosting cron; do not run both schedulers concurrently unless they share the same dispatch/worker lock strategy.
+
 Create a project in **CMS → Site Spider → Monitoring Projects**, set its sitemap/frequency, and leave monitoring enabled. Its first crawl is due immediately. Configure a notification email and enable alerts to receive email for new or recurring findings. The project retains a durable finding history; a finding is resolved only after its URL was successfully crawled and that issue was no longer detected.
 
 ### Tenant access

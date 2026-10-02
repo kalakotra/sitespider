@@ -4,9 +4,7 @@ declare(strict_types=1);
 
 namespace Kalakotra\SiteSpider\Tasks;
 
-use Kalakotra\SiteSpider\Jobs\SiteAuditCrawlJob;
-use Kalakotra\SiteSpider\Models\AuditProject;
-use Kalakotra\SiteSpider\Models\AuditSession;
+use Kalakotra\SiteSpider\Services\CrawlDispatcher;
 use Psr\Log\LoggerInterface;
 use SilverStripe\Control\Director;
 use SilverStripe\Core\Injector\Injector;
@@ -98,53 +96,21 @@ class SiteAuditSpiderTask extends BuildTask
                 . ($sitemapUrl ? " | Sitemap: {$sitemapUrl}" : ' | BFS mode (no sitemap)'));
         }
 
-        $this->queueDueProjects();
+        /** @var CrawlDispatcher $dispatcher */
+        $dispatcher = Injector::inst()->get(CrawlDispatcher::class);
+        $queued = $dispatcher->enqueueReadyCrawls($noAI);
 
-        // ── Queue active sessions; duplicate session jobs are ignored ─────────
-        $sessions = AuditSession::get()
-            ->filter(['Status' => ['pending', 'running']])
-            ->sort('ID ASC');
-        $queuedCount = 0;
-
-        foreach ($sessions as $session) {
-            $jobId = SiteAuditCrawlJob::queueSession((int) $session->ID, $noAI);
-            $this->log("[QUEUED] Session #{$session->ID}; job #{$jobId} processes one page per run.");
-            $queuedCount++;
-        }
-
-        if (!$queuedCount) {
+        if ($queued['sessions'] === 0) {
             $this->log('No active sessions to enqueue.');
-            return Command::SUCCESS;
+        } else {
+            $this->log(sprintf(
+                '[QUEUED] %d active session(s); %d due project(s) scheduled.',
+                $queued['sessions'],
+                $queued['projects'],
+            ));
         }
 
         return Command::SUCCESS;
-    }
-
-    private function queueDueProjects(): void
-    {
-        foreach (AuditProject::get()->filter(['Enabled' => true])->sort('ID ASC') as $project) {
-            if ($project->NextCrawlAt && strtotime((string) $project->NextCrawlAt) > time()) {
-                continue;
-            }
-
-            $activeSession = AuditSession::get()->filter([
-                'AuditProjectID' => $project->ID,
-                'Status' => ['pending', 'running'],
-            ])->first();
-            if ($activeSession) {
-                continue;
-            }
-
-            $session = AuditSession::create();
-            $session->AuditProjectID = $project->ID;
-            $session->BaseURL = $project->BaseURL;
-            $session->SitemapUrl = $project->SitemapUrl;
-            $session->Status = 'pending';
-            $session->write();
-
-            $jobId = SiteAuditCrawlJob::queueSession((int) $session->ID);
-            $this->log("[SCHEDULED] Project #{$project->ID}; session #{$session->ID}, job #{$jobId}.");
-        }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

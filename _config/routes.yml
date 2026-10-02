@@ -7,3 +7,4 @@ After:
 SilverStripe\Control\Director:
   rules:
     'audit-report/$Token': 'Kalakotra\SiteSpider\Controllers\AuditReportController'
+    'api/sitespider/cron': 'Kalakotra\SiteSpider\Controllers\CronTriggerController'
