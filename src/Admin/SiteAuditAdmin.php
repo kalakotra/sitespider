@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Kalakotra\SiteSpider\Admin;
 
 use Kalakotra\SiteSpider\Models\AuditPage;
+use Kalakotra\SiteSpider\Models\AuditFinding;
+use Kalakotra\SiteSpider\Models\AuditProject;
 use Kalakotra\SiteSpider\Models\AuditSession;
 use Kalakotra\SiteSpider\Models\PageLink;
 use SilverStripe\Admin\LeftAndMain;
@@ -13,7 +15,10 @@ use SilverStripe\Control\HTTPResponse;
 use SilverStripe\Forms\Form;
 use SilverStripe\Forms\GridField\GridField;
 use SilverStripe\Forms\GridField\GridFieldDataColumns;
-use SilverStripe\View\Requirements;
+use SilverStripe\ORM\DataList;
+use SilverStripe\Security\Permission;
+use SilverStripe\Security\PermissionProvider;
+use SilverStripe\Security\Security;
 
 /**
  * SiteAuditAdmin — CMS section for Kalakotra SiteSpider.
@@ -24,7 +29,7 @@ use SilverStripe\View\Requirements;
  * AJAX endpoint:
  *   GET /admin/site-spider/mapdata?session=42  — D3 force graph JSON
  */
-class SiteAuditAdmin extends ModelAdmin
+class SiteAuditAdmin extends ModelAdmin implements PermissionProvider
 {
     private static string $url_segment     = 'site-spider';
     private static string $menu_title      = 'Site Spider';
@@ -32,6 +37,8 @@ class SiteAuditAdmin extends ModelAdmin
     private static int    $menu_priority   = 50;
 
     private static array $managed_models = [
+        AuditProject::class => ['title' => 'Monitoring Projects'],
+        AuditFinding::class => ['title' => 'Tracked Findings'],
         AuditSession::class => ['title' => 'Crawl Sessions'],
     ];
 
@@ -78,6 +85,47 @@ class SiteAuditAdmin extends ModelAdmin
         return $form;
     }
 
+    public function providePermissions(): array
+    {
+        return [
+            'SITESPIDER_VIEW' => [
+                'name' => 'View owned SiteSpider projects and reports',
+                'category' => 'SiteSpider',
+            ],
+            'SITESPIDER_MANAGE' => [
+                'name' => 'Create projects and manage owned findings',
+                'category' => 'SiteSpider',
+            ],
+        ];
+    }
+
+    public function canView($member = null): bool
+    {
+        $member ??= Security::getCurrentUser();
+        return Permission::checkMember($member, 'ADMIN')
+            || Permission::checkMember($member, 'SITESPIDER_VIEW')
+            || Permission::checkMember($member, 'SITESPIDER_MANAGE');
+    }
+
+    public function getList(): DataList
+    {
+        $list = parent::getList();
+        $member = Security::getCurrentUser();
+        if (Permission::checkMember($member, 'ADMIN')) {
+            return $list;
+        }
+        if (!$member || !$this->canView($member)) {
+            return $list->filter(['ID' => 0]);
+        }
+
+        return match ($this->getModelClass()) {
+            AuditProject::class => $list->filter(['OwnerID' => $member->ID]),
+            AuditSession::class => $list->filter(['AuditProject.OwnerID' => $member->ID]),
+            AuditFinding::class => $list->filter(['AuditProject.OwnerID' => $member->ID]),
+            default => $list->filter(['ID' => 0]),
+        };
+    }
+
     private function customiseSessionGrid(Form $form): void
     {
         $gridField = $form->Fields()->dataFieldByName(
@@ -115,6 +163,10 @@ class SiteAuditAdmin extends ModelAdmin
     public function mapdata(): HTTPResponse
     {
         $sessionId = (int) $this->getRequest()->getVar('session');
+        $session = AuditSession::get()->byID($sessionId);
+        if (!$session || !$session->canView(Security::getCurrentUser())) {
+            $this->httpError(404, 'Session not found');
+        }
 
         $pages = AuditPage::get()
             ->filter(['AuditSessionID' => $sessionId, 'IsCrawled' => true])

@@ -10,8 +10,11 @@ use Kalakotra\AIGateway\Services\AIGatewayService;
 use Kalakotra\SiteSpider\Models\AuditPage;
 use Kalakotra\SiteSpider\Models\AuditSession;
 use Kalakotra\SiteSpider\Models\AuditTask;
+use Kalakotra\SiteSpider\Jobs\SiteAuditCrawlJob;
+use Kalakotra\SiteSpider\Services\AuditFindingService;
 use Psr\Log\LoggerInterface;
 use SilverStripe\Core\Config\Configurable;
+use SilverStripe\Core\Injector\Injector;
 use SilverStripe\Core\Injector\Injectable;
 use SilverStripe\ORM\DB;
 use function array_slice;
@@ -23,7 +26,7 @@ use function strlen;
  *
  * ── Cron model ────────────────────────────────────────────────────────────────
  *
- * Each cron run calls SiteAuditSpiderTask, which calls processTick().
+ * Each SiteAuditCrawlJob calls processTick() for its specific session.
  * processTick() does exactly ONE of the following:
  *
  *   A) Seed phase  — if the session has SitemapUrl and no pages yet:
@@ -31,23 +34,22 @@ use function strlen;
  *                    then return. Next tick starts crawling.
  *
  *   B) Crawl phase — fetch the oldest IsCrawled=false AuditPage for the
- *                    oldest running AuditSession, crawl it, persist metrics,
+ *                    selected running AuditSession, crawl it, persist metrics,
  *                    run AI cannibalization, then return.
  *
  *   C) Finish      — if session.isExhausted(), mark it completed.
  *
- * Multiple AuditSessions can be running concurrently; each tick services
- * the session with the lowest ID that still has pending pages (round-robin
- * across sessions is a future enhancement — current model: FIFO by session ID).
+ * Multiple AuditSessions can be queued independently; each job remains scoped
+ * to one session and one crawl tick.
  *
  * ── Session selection priority ────────────────────────────────────────────────
- *   1. running sessions first (oldest ID)
- *   2. pending sessions are transitioned to running and seeded
+ *   1. Running sessions are preferred when no session ID is supplied.
+ *   2. Queued jobs pass a session ID to keep work isolated.
  *
  * YAML config:
  *   Kalakotra\SiteSpider\Services\AuditService:
  *     ai_cannibalization_enabled: true
- *     crawl_delay_ms: 0          # 0 = no delay (cron handles scheduling)
+ *     crawl_delay_ms: 0          # Optional in-process delay; the queued job delays continuations
  */
 class AuditService
 {
@@ -69,14 +71,14 @@ class AuditService
     // ── Public: single-tick entry point ───────────────────────────────────────
 
     /**
-     * Process one page for one session. Called once per cron tick.
+    * Process one crawl tick for one session. Queued jobs call this once each.
      *
      * Returns a human-readable summary of what was done (for task output).
      */
-    public function processTick(): string
+    public function processTick(?int $sessionId = null): string
     {
         // ── Find the active session ───────────────────────────────────────────
-        $session = $this->resolveActiveSession();
+        $session = $this->resolveActiveSession($sessionId);
 
         if (!$session) {
             return 'No active sessions to process.';
@@ -88,6 +90,10 @@ class AuditService
             || ((int) $session->TotalPages === 0 && $session->SitemapUrl)
         ) {
             return $this->seedSession($session);
+        }
+
+        if (!$session->SiteFilesChecked) {
+            $this->inspectSiteFiles($session);
         }
 
         // ── B) Crawl phase: pick next pending page ────────────────────────────
@@ -149,6 +155,8 @@ class AuditService
         $session->StartedAt = date('Y-m-d H:i:s');
         $session->write();
 
+        $this->inspectSiteFiles($session);
+
         // Always seed BaseURL so homepage is crawled even when sitemap omits it
         $this->ensureSeedPage($session);
 
@@ -166,6 +174,136 @@ class AuditService
         return "[Session #{$session->ID}] No sitemap — seeded from BaseURL: {$session->BaseURL}";
     }
 
+    private function inspectSiteFiles(AuditSession $session): void
+    {
+        $parts = parse_url((string) $session->BaseURL);
+        if (empty($parts['scheme']) || empty($parts['host'])) {
+            $session->RobotsTxtStatus = 'invalid URL';
+            $session->RobotsTxtAnalysis = 'Cannot inspect site files because the session BaseURL is not a valid absolute URL.';
+            $session->LLMsTxtStatus = 'invalid URL';
+            $session->LLMsTxtAnalysis = 'Cannot inspect site files because the session BaseURL is not a valid absolute URL.';
+            $session->SiteFilesChecked = true;
+            $session->write();
+            return;
+        }
+
+        $origin = $parts['scheme'] . '://' . $parts['host']
+            . (isset($parts['port']) ? ':' . $parts['port'] : '');
+        $robotsUrl = $origin . '/robots.txt';
+        $llmsUrl = $origin . '/llms.txt';
+
+        $robots = $this->spider->fetchSiteFile($robotsUrl);
+        $session->RobotsTxtStatus = (string) $robots['status'];
+        $session->RobotsTxtContent = $robots['status'] === 200 ? $robots['content'] : '';
+        $session->RobotsTxtAnalysis = $this->analyseRobotsTxt(
+            (int) $robots['status'],
+            (string) $robots['content'],
+            $session->SitemapUrl
+        );
+
+        if (!$session->SitemapUrl && preg_match('/^\s*Sitemap:\s*(\S+)/im', (string) $robots['content'], $match)) {
+            $session->SitemapUrl = trim($match[1]);
+        }
+
+        $llms = $this->spider->fetchSiteFile($llmsUrl);
+        $session->LLMsTxtStatus = (string) $llms['status'];
+        $session->LLMsTxtAnalysis = $this->analyseLLMsTxt(
+            (int) $llms['status'],
+            (string) $llms['content']
+        );
+        $session->SiteFilesChecked = true;
+
+        $session->write();
+    }
+
+    private function analyseRobotsTxt(int $status, string $content, string $configuredSitemap): string
+    {
+        if ($status === 404) {
+            return "robots.txt was not found (HTTP 404). This is optional; crawlers generally treat the site as having no robots rules. Add the file if you need to control crawler access.";
+        }
+        if ($status !== 200) {
+            return $status >= 500 || $status === 0
+                ? "robots.txt could not be read (HTTP {$status}). Crawling is conservatively blocked until the site's robots policy can be confirmed. Check server availability and permissions."
+                : "robots.txt returned HTTP {$status}. Check that it is publicly readable and served as plain text.";
+        }
+
+        $lines = preg_split('/\r?\n/', $content) ?: [];
+        $allowCount = 0;
+        $disallowCount = 0;
+        $sitemaps = [];
+        $globalBlock = false;
+        $hasAgent = false;
+        foreach ($lines as $line) {
+            $line = trim(explode('#', $line, 2)[0]);
+            if (!str_contains($line, ':')) {
+                continue;
+            }
+            [$key, $value] = array_map('trim', explode(':', $line, 2));
+            $key = strtolower($key);
+            if ($key === 'user-agent') {
+                $hasAgent = true;
+            } elseif ($key === 'allow' && $value !== '') {
+                $allowCount++;
+            } elseif ($key === 'disallow' && $value !== '') {
+                $disallowCount++;
+                if ($value === '/' && $hasAgent) {
+                    $globalBlock = true;
+                }
+            } elseif ($key === 'sitemap' && filter_var($value, FILTER_VALIDATE_URL)) {
+                $sitemaps[] = $value;
+            }
+        }
+
+        $findings = ["robots.txt is reachable (HTTP 200). Parsed {$allowCount} Allow and {$disallowCount} Disallow rules."];
+        if ($globalBlock) {
+            $findings[] = 'WARNING: at least one user-agent group has Disallow: /. Verify this is intentional; it can block an entire crawler group.';
+        }
+        if (!$configuredSitemap && !$sitemaps) {
+            $findings[] = 'No Sitemap directive found. Add a Sitemap URL if the site has an XML sitemap.';
+        } elseif ($sitemaps) {
+            $findings[] = 'Sitemap directive(s): ' . implode(', ', array_unique($sitemaps));
+        }
+        if (trim($content) === '') {
+            $findings[] = 'The file is empty; crawlers are effectively unrestricted.';
+        }
+
+        return implode("\n", $findings);
+    }
+
+    private function analyseLLMsTxt(int $status, string $content): string
+    {
+        if ($status === 404) {
+            return "llms.txt was not found (HTTP 404). It is optional and is not a confirmed Google ranking factor. Consider adding it as a concise guide to the site's canonical, high-value content for AI systems.";
+        }
+        if ($status !== 200) {
+            return "llms.txt returned HTTP {$status}. Check public availability and permissions.";
+        }
+
+        $lines = preg_split('/\r?\n/', trim($content)) ?: [];
+        $firstContentLine = '';
+        foreach ($lines as $line) {
+            if (trim($line) !== '') {
+                $firstContentLine = trim($line);
+                break;
+            }
+        }
+        preg_match_all('/\[[^\]]+\]\(https?:\/\/[^)]+\)/i', $content, $links);
+        $sectionCount = preg_match_all('/^#{2,3}\s+/m', $content);
+        $findings = ["llms.txt is reachable (HTTP 200); found " . count($links[0]) . ' absolute Markdown link(s) and ' . (int) $sectionCount . ' section heading(s).'];
+        if (!str_starts_with($firstContentLine, '# ')) {
+            $findings[] = 'Recommendation: start with a level-one Markdown heading naming the site or organisation.';
+        }
+        if (count($links[0]) === 0) {
+            $findings[] = 'Recommendation: add curated absolute links to the most useful canonical pages, with short descriptions.';
+        }
+        if (strlen(trim($content)) < 80) {
+            $findings[] = 'The file is very short; include a brief description and the key content sections that best represent the site.';
+        }
+        $findings[] = 'llms.txt is an emerging convention, not a guaranteed search-ranking signal.';
+
+        return implode("\n", $findings);
+    }
+
     /**
      * Mark session as completed and compute final stats.
      */
@@ -180,6 +318,19 @@ class AuditService
         $session->TotalBroken = $pages->filter(['HttpStatus' => 404])->count();
         $session->TotalOrphans= $pages->filter(['IsOrphan' => true])->count();
         $session->write();
+
+        $project = $session->AuditProject();
+        if ($project && $project->exists()) {
+            try {
+                $findingService = Injector::inst()->createWithArgs(AuditFindingService::class, [
+                    'logger' => $this->logger,
+                ]);
+                $findingService->reconcile($session);
+            } catch (\Throwable $e) {
+                $this->logger->error("SiteSpider finding reconciliation failed for session #{$session->ID}: {$e->getMessage()}");
+            }
+            $project->scheduleNextCrawl($session->FinishedAt);
+        }
 
         $this->logger->info(sprintf(
             'SiteSpider session #%d completed. Pages: %d | Broken: %d | Orphans: %d',
@@ -211,6 +362,21 @@ class AuditService
     private function crawlOnePage(AuditPage $page, AuditSession $session): void
     {
         $this->logger->info("SiteSpider crawling [{$session->ID}]: {$page->URL}");
+
+        $robotsStatus = (int) $session->RobotsTxtStatus;
+        if (
+            $robotsStatus === 0
+            || $robotsStatus >= 500
+            || !$this->spider->isAllowedByRobots((string) $session->RobotsTxtContent, $page->URL)
+        ) {
+            $page->RobotsBlocked = true;
+            $page->HttpStatus = 0;
+            $page->CrawledAt = date('Y-m-d H:i:s');
+            $page->IsCrawled = true;
+            $page->write();
+            $this->logger->info("SiteSpider skipped robots-disallowed page: {$page->URL}");
+            return;
+        }
 
         // ── Recrawl context (load BEFORE crawling to capture previous task state) ──
         // $page->NeedsRecrawl is still true at this point — will be reset by generateTasks()
@@ -514,8 +680,15 @@ class AuditService
      *   - Status = 'running' with pending pages, OR
      *   - Status = 'pending' (needs seeding)
      */
-    private function resolveActiveSession(): ?AuditSession
+    private function resolveActiveSession(?int $sessionId = null): ?AuditSession
     {
+        if ($sessionId !== null) {
+            $session = AuditSession::get()->byID($sessionId);
+            return $session && in_array($session->Status, ['pending', 'running'], true)
+                ? $session
+                : null;
+        }
+
         // Prefer already-running sessions that still have pending pages
         $running = AuditSession::get()
             ->filter('Status', 'running')
@@ -562,13 +735,14 @@ class AuditService
      * Create a new AuditSession and queue it for processing.
      * The cron will pick it up on the next tick.
      */
-    public function createSession(string $baseUrl, string $sitemapUrl = ''): AuditSession
+    public function createSession(string $baseUrl, string $sitemapUrl = '', bool $noAI = false): AuditSession
     {
         $session             = AuditSession::create();
         $session->BaseURL    = rtrim($baseUrl, '/');
         $session->SitemapUrl = $sitemapUrl;
         $session->Status     = 'pending';
         $session->write();
+        SiteAuditCrawlJob::queueSession((int) $session->ID, $noAI);
 
         $this->logger->info(
             "SiteSpider: created session #{$session->ID} for {$baseUrl}"

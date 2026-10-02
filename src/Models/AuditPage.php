@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kalakotra\SiteSpider\Models;
 
+use Kalakotra\SiteSpider\Models\HasAuditProjectAccess;
 use SilverStripe\Forms\FieldList;
 use SilverStripe\Forms\GridField\GridField;
 use SilverStripe\Forms\GridField\GridFieldConfig_RecordViewer;
@@ -15,6 +16,9 @@ use SilverStripe\Forms\TextareaField;
 use SilverStripe\ORM\DataObject;
 use SilverStripe\ORM\HasManyList;
 use SilverStripe\ORM\ManyManyList;
+use SilverStripe\Security\Permission;
+use SilverStripe\Security\Security;
+use Kalakotra\SiteSpider\Jobs\SiteAuditCrawlJob;
 
 /**
  * AuditPage — one crawled (or queued) URL within an AuditSession.
@@ -39,6 +43,7 @@ use SilverStripe\ORM\ManyManyList;
  * @property string $BodyKeywords
  * @property string $RedirectTarget
  * @property bool   $IsCrawled
+ * @property bool   $RobotsBlocked
  * @property string $CrawledAt
  * @property bool   $IsFromSitemap
  * @property int    $InboundLinksCount
@@ -69,10 +74,46 @@ use SilverStripe\ORM\ManyManyList;
  */
 class AuditPage extends DataObject
 {
+    use HasAuditProjectAccess;
+
     private static string $table_name = 'KSS_AuditPage';
 
     private static string $singular_name = 'Audit Page';
     private static string $plural_name   = 'Audit Pages';
+
+    protected function onAfterWrite(): void
+    {
+        parent::onAfterWrite();
+
+        if ($this->IsCrawled || !$this->AuditSessionID) {
+            return;
+        }
+
+        $session = AuditSession::get()->byID((int) $this->AuditSessionID);
+        if (!$session) {
+            return;
+        }
+
+        if ($session->Status === 'completed') {
+            $session->Status = 'running';
+            $session->FinishedAt = null;
+            $session->write();
+        }
+
+        if (in_array($session->Status, ['pending', 'running'], true)) {
+            SiteAuditCrawlJob::queueSession((int) $session->ID);
+        }
+    }
+
+    public function canEdit($member = null): bool
+    {
+        return Permission::checkMember($member ?? Security::getCurrentUser(), 'ADMIN');
+    }
+
+    public function canCreate($member = null, $context = []): bool
+    {
+        return Permission::checkMember($member ?? Security::getCurrentUser(), 'ADMIN');
+    }
 
     private static array $db = [
         // ── Core crawl data ──────────────────────────────────────────────────
@@ -84,6 +125,7 @@ class AuditPage extends DataObject
         'BodyKeywords'    => 'Text',          // top-10 keywords, comma-separated
         'RedirectTarget'  => 'Varchar(2048)', // populated for 3xx responses
         'IsCrawled'       => 'Boolean',
+        'RobotsBlocked'   => 'Boolean',
         'CrawledAt'       => 'Datetime',
         'IsFromSitemap'   => 'Boolean',       // true = URL came from sitemap.xml
 
@@ -236,6 +278,7 @@ class AuditPage extends DataObject
 
         $fields->addFieldsToTab('Root.TechnicalSEO', [
             ReadonlyField::create('IsHttpsBadge', 'HTTPS'),
+            ReadonlyField::create('RobotsBlockedBadge', 'robots.txt Access'),
             ReadonlyField::create('ResponseTimeMs', 'Response Time (ms)'),
             ReadonlyField::create('RobotsBadge', 'Robots Meta'),
             ReadonlyField::create('CanonicalUrl', 'Canonical URL'),
@@ -333,6 +376,10 @@ class AuditPage extends DataObject
 
     public function getStatusBadge(): string
     {
+        if ($this->RobotsBlocked) {
+            return '⛔ robots.txt';
+        }
+
         return match (true) {
             $this->HttpStatus === 200                             => '✓ 200',
             $this->HttpStatus >= 301 && $this->HttpStatus <= 308 => "↪ {$this->HttpStatus}",
@@ -412,6 +459,11 @@ class AuditPage extends DataObject
             $parts[] = 'nofollow';
         }
         return $parts ? ('⚠ ' . implode(', ', $parts)) : '✓ OK';
+    }
+
+    public function getRobotsBlockedBadge(): string
+    {
+        return $this->RobotsBlocked ? 'Blocked by robots.txt' : 'Allowed';
     }
 
     public function getAiOnPageBadge(): string

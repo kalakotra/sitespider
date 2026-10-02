@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kalakotra\SiteSpider\Models;
 
+use Kalakotra\SiteSpider\Models\HasAuditProjectAccess;
 
 use SilverStripe\Control\Director;
 use SilverStripe\Forms\DropdownField;
@@ -16,9 +17,12 @@ use SilverStripe\Forms\GridField\GridFieldFilterHeader;
 use SilverStripe\Forms\GridField\GridFieldPaginator;
 use SilverStripe\Forms\GridField\GridFieldSortableHeader;
 use SilverStripe\Forms\ReadonlyField;
+use SilverStripe\Forms\TextareaField;
 use SilverStripe\Forms\TextField;
 use SilverStripe\ORM\DataObject;
 use SilverStripe\ORM\HasManyList;
+use SilverStripe\Security\Permission;
+use SilverStripe\Security\Security;
 
 /**
  * AuditSession — one complete crawl run for a single website.
@@ -51,6 +55,8 @@ use SilverStripe\ORM\HasManyList;
  */
 class AuditSession extends DataObject
 {
+    use HasAuditProjectAccess;
+
     private static string $table_name = 'KSS_AuditSession';
 
     private static string $singular_name = 'Audit Session';
@@ -70,12 +76,22 @@ class AuditSession extends DataObject
 
         // Unique token per session — used as tracker.js ?token= parameter
         'ApiToken' => 'Varchar(128)',
+        'RobotsTxtStatus' => 'Varchar(32)',
+        'RobotsTxtContent' => 'Text',
+        'RobotsTxtAnalysis' => 'Text',
+        'LLMsTxtStatus' => 'Varchar(32)',
+        'LLMsTxtAnalysis' => 'Text',
+        'SiteFilesChecked' => 'Boolean',
+        'NewFindings' => 'Int',
+        'ResolvedFindings' => 'Int',
+        'RegressedFindings' => 'Int',
     ];
 
     private static array $has_one = [
         // Pointer to the page currently being processed this tick.
         // NULL when no tick is running or session is complete.
         'CurrentPage' => AuditPage::class,
+        'AuditProject' => AuditProject::class,
     ];
 
     private static array $has_many = [
@@ -118,6 +134,16 @@ class AuditSession extends DataObject
         }
     }
 
+    public function canEdit($member = null): bool
+    {
+        return Permission::checkMember($member ?? Security::getCurrentUser(), 'ADMIN');
+    }
+
+    public function canCreate($member = null, $context = []): bool
+    {
+        return Permission::checkMember($member ?? Security::getCurrentUser(), 'ADMIN');
+    }
+
     // ── Virtual getters ───────────────────────────────────────────────────────
 
     public function getShareURL(): string
@@ -131,7 +157,7 @@ class AuditSession extends DataObject
     {
         $fields = parent::getCMSFields();
 
-        $fields->removeByName(['CurrentPageID', 'Pages', 'ShareToken']);
+        $fields->removeByName(['CurrentPageID', 'Pages', 'ShareToken', 'AuditProjectID']);
 
         $fields->addFieldsToTab('Root.Main', [
             TextField::create('BaseURL', 'Base URL')
@@ -149,14 +175,28 @@ class AuditSession extends DataObject
         ]);
 
         $fields->addFieldsToTab('Root.Stats', [
+            ReadonlyField::create('AuditProject.Name', 'Monitoring project'),
             ReadonlyField::create('CrawledPages', 'Crawled Pages'),
             ReadonlyField::create('TotalPages', 'Total Pages Discovered'),
             ReadonlyField::create('TotalBroken', 'Broken Pages (404)'),
             ReadonlyField::create('TotalOrphans', 'Orphan Pages'),
+            ReadonlyField::create('NewFindings', 'New findings'),
+            ReadonlyField::create('ResolvedFindings', 'Resolved findings'),
+            ReadonlyField::create('RegressedFindings', 'Regressed findings'),
             ReadonlyField::create('ProgressNice', 'Progress'),
             ReadonlyField::create('Duration', 'Duration'),
             ReadonlyField::create('StartedAt', 'Started At'),
             ReadonlyField::create('FinishedAt', 'Finished At'),
+        ]);
+
+        $fields->addFieldsToTab('Root.SiteFiles', [
+            ReadonlyField::create('SiteFilesChecked', 'Site files checked'),
+            ReadonlyField::create('RobotsTxtStatus', 'robots.txt HTTP Status'),
+            TextareaField::create('RobotsTxtAnalysis', 'robots.txt Analysis')
+                ->setRows(8)->setReadonly(true),
+            ReadonlyField::create('LLMsTxtStatus', 'llms.txt HTTP Status'),
+            TextareaField::create('LLMsTxtAnalysis', 'llms.txt Analysis')
+                ->setRows(8)->setReadonly(true),
         ]);
 
         if ($this->isInDB()) {
@@ -179,14 +219,14 @@ class AuditSession extends DataObject
                 $this->buildPagesGrid('All', $this->Pages()),
             ]);
 
-            $broken = $this->Pages()->filter('HttpStatus', 404);
+            $broken = $this->Pages()->filter(['HttpStatus' => 404]);
             if ($broken->count()) {
                 $fields->addFieldsToTab('Root.Broken404', [
                     $this->buildPagesGrid('Broken404', $broken),
                 ]);
             }
 
-            $orphans = $this->Pages()->filter('IsOrphan', true);
+            $orphans = $this->Pages()->filter(['IsOrphan' => true]);
             if ($orphans->count()) {
                 $fields->addFieldsToTab('Root.Orphans', [
                     $this->buildPagesGrid('Orphans', $orphans),

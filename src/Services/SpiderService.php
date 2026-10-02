@@ -50,6 +50,118 @@ class SpiderService
         private readonly LoggerInterface $logger,
     ) {}
 
+    public function fetchSiteFile(string $url): array
+    {
+        try {
+            $response = $this->httpClient->get($url, [
+                'timeout' => (int) self::config()->get('request_timeout'),
+                'headers' => ['User-Agent' => self::config()->get('user_agent')],
+                'http_errors' => false,
+            ]);
+
+            return [
+                'status' => $response->getStatusCode(),
+                'content' => (string) $response->getBody(),
+            ];
+        } catch (\Throwable $e) {
+            $this->logger->warning("SiteSpider could not fetch {$url}: {$e->getMessage()}");
+            return ['status' => 0, 'content' => ''];
+        }
+    }
+
+    public function isAllowedByRobots(string $robotsTxt, string $url): bool
+    {
+        if (trim($robotsTxt) === '') {
+            return true;
+        }
+
+        $groups = [];
+        $agents = [];
+        $rules = [];
+        $hasRules = false;
+        foreach (preg_split('/\r?\n/', $robotsTxt) ?: [] as $line) {
+            $line = trim(explode('#', $line, 2)[0]);
+            if ($line === '' || !str_contains($line, ':')) {
+                continue;
+            }
+
+            [$key, $value] = array_map('trim', explode(':', $line, 2));
+            $key = strtolower($key);
+            if ($key === 'user-agent') {
+                if ($hasRules && $agents) {
+                    $groups[] = ['agents' => $agents, 'rules' => $rules];
+                    $agents = [];
+                    $rules = [];
+                    $hasRules = false;
+                }
+                $agents[] = strtolower($value);
+            } elseif (in_array($key, ['allow', 'disallow'], true) && $agents) {
+                $hasRules = true;
+                if ($value !== '') {
+                    $rules[] = ['directive' => $key, 'path' => $value];
+                }
+            }
+        }
+        if ($agents) {
+            $groups[] = ['agents' => $agents, 'rules' => $rules];
+        }
+
+        $configuredAgent = (string) self::config()->get('user_agent');
+        preg_match('/^[A-Za-z0-9_-]+/', $configuredAgent, $match);
+        $agentToken = strtolower($match[0] ?? 'kalakotrasitespider');
+        $matchingGroups = [];
+        $specificity = 0;
+        foreach ($groups as $group) {
+            foreach ($group['agents'] as $agent) {
+                if ($agent === '*' || ($agent !== '' && str_contains($agentToken, $agent))) {
+                    $length = $agent === '*' ? 0 : strlen($agent);
+                    if ($length > $specificity) {
+                        $specificity = $length;
+                        $matchingGroups = [$group];
+                    } elseif ($length === $specificity) {
+                        $matchingGroups[] = $group;
+                    }
+                }
+            }
+        }
+
+        if (!$matchingGroups) {
+            return true;
+        }
+
+        $path = (string) (parse_url($url, PHP_URL_PATH) ?: '/');
+        $query = parse_url($url, PHP_URL_QUERY);
+        if ($query !== null) {
+            $path .= '?' . $query;
+        }
+
+        $bestLength = -1;
+        $bestAllowed = true;
+        foreach ($matchingGroups as $group) {
+            foreach ($group['rules'] as $rule) {
+                $pattern = $rule['path'];
+                $anchored = str_ends_with($pattern, '$');
+                if ($anchored) {
+                    $pattern = substr($pattern, 0, -1);
+                }
+                $regex = '~^' . str_replace('\\*', '.*', preg_quote($pattern, '~'))
+                    . ($anchored ? '$' : '') . '~';
+                if (preg_match($regex, $path) !== 1) {
+                    continue;
+                }
+
+                $length = strlen(str_replace('*', '', $pattern));
+                $allowed = $rule['directive'] === 'allow';
+                if ($length > $bestLength || ($length === $bestLength && $allowed)) {
+                    $bestLength = $length;
+                    $bestAllowed = $allowed;
+                }
+            }
+        }
+
+        return $bestAllowed;
+    }
+
     // ── 0. parseSitemap ───────────────────────────────────────────────────────
 
     /**
@@ -372,28 +484,6 @@ class SpiderService
 
         $ogImageNode = $xpath->query('//meta[@property="og:image"]/@content')->item(0);
         $ogImage     = $ogImageNode ? trim($ogImageNode->nodeValue) : '';
-
-        return [
-            'title'                    => substr($title, 0, 512),
-            'description'              => $desc,
-            'h1'                       => substr($h1, 0, 512),
-            'keywords'                 => $keywords,
-            'alt_texts'                => $alts,
-            'robots_noindex'           => $noindex,
-            'robots_nofollow'          => $nofollow,
-            'canonical'                => substr($canonical, 0, 2048),
-            'title_length'             => strlen($title),
-            'meta_description_length'  => strlen($desc),
-            'h1_count'                 => $h1Count,
-            'h2_count'                 => $h2Count,
-            'word_count'               => $wordCount,
-            'images_without_alt'       => $imagesWithoutAlt,
-            'og_title'                 => substr($ogTitle, 0, 512),
-            'og_description'           => $ogDesc,
-            'og_image'                 => substr($ogImage, 0, 2048),
-        ];
-
-        // NOTE: new extractions below use same $dom / $xpath / $body from above
 
         // ── H3-H6 counts ───────────────────────────────────────────────────────────────────────────────────────────────
         $h3Count = $xpath->query('//h3') ? $xpath->query('//h3')->length : 0;

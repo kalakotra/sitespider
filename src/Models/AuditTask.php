@@ -4,8 +4,13 @@ declare(strict_types=1);
 
 namespace Kalakotra\SiteSpider\Models;
 
+use Kalakotra\SiteSpider\Jobs\SiteAuditCrawlJob;
+use Kalakotra\SiteSpider\Models\HasAuditProjectAccess;
 use SilverStripe\ORM\DataObject;
 use SilverStripe\ORM\DB;
+use SilverStripe\Forms\DropdownField;
+use SilverStripe\Forms\FieldList;
+use SilverStripe\Forms\ReadonlyField;
 
 /**
  * AuditTask — one actionable checklist item for an AuditPage.
@@ -28,6 +33,8 @@ use SilverStripe\ORM\DB;
  */
 class AuditTask extends DataObject
 {
+    use HasAuditProjectAccess;
+
     private static string $table_name    = 'KSS_AuditTask';
     private static string $singular_name = 'Audit Task';
     private static string $plural_name   = 'Audit Tasks';
@@ -59,6 +66,24 @@ class AuditTask extends DataObject
     ];
 
     private static string $default_sort = "FIELD(Priority,'high','medium','low'), Type ASC";
+
+    public function getCMSFields(): FieldList
+    {
+        $fields = parent::getCMSFields();
+        $fields->removeByName(['AuditPageID', 'Type', 'Description', 'Priority', 'Status', 'ResolvedAt']);
+        $fields->addFieldsToTab('Root.Main', [
+            ReadonlyField::create('Type', 'Issue'),
+            ReadonlyField::create('Description', 'Description'),
+            ReadonlyField::create('Priority', 'Priority'),
+            DropdownField::create('Status', 'Status', [
+                'open' => 'Open',
+                'done' => 'Done',
+                'ignored' => 'Ignored',
+            ]),
+            ReadonlyField::create('ResolvedAt', 'Resolved at'),
+        ]);
+        return $fields;
+    }
 
     // ── Type labels ───────────────────────────────────────────────────────────
 
@@ -149,6 +174,9 @@ class AuditTask extends DataObject
                 $session->Status = 'running';
                 $session->FinishedAt = null;
                 $session->write();
+            }
+            if ($session && in_array($session->Status, ['pending', 'running'], true)) {
+                SiteAuditCrawlJob::queueSession((int) $session->ID);
             }
         }
     }

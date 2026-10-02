@@ -6,7 +6,10 @@ SEO crawl engine for SilverStripe 6.1 — sitemap-first link graph analysis with
 
 - **Sitemap seeding** — XML sitemap (`<urlset>` + `<sitemapindex>`) pre-populates the crawl queue in order
 - **BFS fallback** — if no sitemap, discovery starts from `BaseURL` via `<a href>` parsing
-- **One page per cron tick** — flat memory, no timeouts, multiple concurrent sessions
+- **robots.txt audit and enforcement** — reports status, broad blocks, sitemap directives, and skips URLs disallowed for the SiteSpider user-agent
+- **llms.txt audit** — reports availability and basic Markdown structure with optional recommendations; it is not presented as a Google ranking factor
+- **Queued crawl jobs** — one page per job, delayed continuation, retry support, and serialized queue processing
+- **Recurring monitoring projects** — daily, weekly, or monthly sitemap crawls with cross-run issue history and optional regression email alerts
 - **Link graph** — `PageLink` pivot table tracks every directed internal edge
 - **Inbound/Outbound counts** — live-updated on every `persistLinks()` call
 - **Orphan detection** — `IsOrphan=true` when `InboundLinksCount === 0`
@@ -20,11 +23,24 @@ composer require kalakotra/sitespider
 vendor/bin/sake dev/build flush=all
 ```
 
-## Crontab (every minute)
+## Queued job worker
 
 ```cron
-* * * * * /path/to/project/vendor/bin/sake dev/tasks/SiteAuditSpiderTask >> /var/log/sitespider.log 2>&1
+* * * * * flock -n /tmp/sitespider-dispatch.lock sh -c 'cd /path/to/project && php vendor/bin/sake dev/tasks/Kalakotra-SiteSpider-Tasks-SiteAuditSpiderTask >> var/log/sitespider.log 2>&1'
+* * * * * flock -n /tmp/queuedjobs-worker.lock sh -c 'cd /path/to/project && php vendor/bin/sake dev/tasks/ProcessJobQueueTask --queue=queued >> var/log/queuedjobs.log 2>&1'
+* * * * * sleep 20; flock -n /tmp/queuedjobs-worker.lock sh -c 'cd /path/to/project && php vendor/bin/sake dev/tasks/ProcessJobQueueTask --queue=queued >> var/log/queuedjobs.log 2>&1'
+* * * * * sleep 40; flock -n /tmp/queuedjobs-worker.lock sh -c 'cd /path/to/project && php vendor/bin/sake dev/tasks/ProcessJobQueueTask --queue=queued >> var/log/queuedjobs.log 2>&1'
 ```
+
+The dispatcher checks due monitoring projects and recovers active sessions. QueuedJobs uses a serial queue runner by default. Shared `flock` locks prevent overlapping processes; each SiteSpider job processes one page, then schedules the next page after `page_delay_seconds` (60 seconds by default).
+
+Create a project in **CMS → Site Spider → Monitoring Projects**, set its sitemap/frequency, and leave monitoring enabled. Its first crawl is due immediately. Configure a notification email and enable alerts to receive email for new or recurring findings. The project retains a durable finding history; a finding is resolved only after its URL was successfully crawled and that issue was no longer detected.
+
+### Tenant access
+
+Each project is owned by one SilverStripe `Member`. SaaS endpoints should require an authenticated member and use the model owner checks: a member can view/edit only records under their projects, while new projects are automatically assigned to the current member. `ADMIN` can administer all tenants. Crawl sessions, pages, links, and beacon logs are read-only to tenant users; only an administrator can delete history. Existing sessions without a project owner remain admin-only. The current CMS section separately uses `SITESPIDER_VIEW`/`SITESPIDER_MANAGE` for access to that CMS interface. Shareable client reports intentionally remain accessible by their unguessable share token.
+
+At session seeding, SiteSpider checks `/robots.txt` and `/llms.txt` at the site's origin and stores the findings in the AuditSession `SiteFiles` CMS tab. A robots.txt 5xx or fetch failure is treated conservatively: pages are skipped rather than crawled without a confirmed policy. A missing robots.txt is optional and allows crawling. A missing llms.txt is a recommendation, not an error.
 
 ## Creating a session
 
@@ -41,8 +57,8 @@ vendor/bin/sake dev/tasks/SiteAuditSpiderTask new=1 url=https://example.com
 # Disable AI for a run
 vendor/bin/sake dev/tasks/SiteAuditSpiderTask noai=1
 
-# Run 50 ticks manually (dev)
-vendor/bin/sake dev/tasks/SiteAuditSpiderTask ticks=50
+# Enqueue the active session; the worker processes one page per queued job
+vendor/bin/sake dev/tasks/SiteAuditSpiderTask
 ```
 
 Or via PHP:
@@ -53,28 +69,20 @@ use SilverStripe\Core\Injector\Injector;
 
 $service = Injector::inst()->get(AuditService::class);
 
-// Creates a session; cron picks it up automatically
+// Creates and queues a session automatically
 $session = $service->createSession(
     baseUrl: 'https://example.com',
     sitemapUrl: 'https://example.com/sitemap.xml'
 );
 ```
 
-## Cron tick logic
+## Queued crawl logic
 
 ```
-processTick()
-  ├─ Resolve active session (oldest running, then oldest pending)
-  ├─ [Seed]   Status=pending OR no pages yet + SitemapUrl set
-  │     └─ parseSitemap() → INSERT AuditPage rows (IsFromSitemap=true)
-  │        OR ensureSeedPage() from BaseURL
-  ├─ [Crawl]  Pop oldest IsCrawled=false AuditPage (FIFO by ID)
-  │     ├─ checkResponse() → HttpStatus, RedirectTarget
-  │     ├─ GET body → extractMetadata() → PageTitle, H1, keywords
-  │     ├─ discoverLinks() → new internal hrefs not yet in queue
-  │     ├─ persistLinks() → PageLink rows + Inbound/Outbound counters
-  │     └─ analyzeKeywordCannibalization() → AI warning via AIGateway
-  └─ [Finish] isExhausted() → Status=completed, final stats written
+SiteAuditCrawlJob(sessionId)
+  ├─ processTick(sessionId) once (seed, crawl one page, or finalize)
+  ├─ retry temporary job failures with exponential delay
+  └─ if session remains active, queue the next job after page_delay_seconds
 ```
 
 ## Database tables

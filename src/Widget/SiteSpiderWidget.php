@@ -9,9 +9,10 @@ use Kalakotra\Dashboard\Widgets\WidgetWidth;
 use Kalakotra\SiteSpider\Models\AuditPage;
 use Kalakotra\SiteSpider\Models\AuditSession;
 use SilverStripe\Core\Config\Configurable;
-use SilverStripe\ORM\DB;
+use SilverStripe\ORM\DataList;
 use SilverStripe\Security\Member;
 use SilverStripe\Security\Permission;
+use SilverStripe\Security\Security;
 
 /**
  * SiteSpiderWidget
@@ -59,12 +60,13 @@ class SiteSpiderWidget extends StatsWidget
     public function getStats(): array
     {
         // ── 1. Active crawls ─────────────────────────────────────────────────
-        $activeCrawls = AuditSession::get()
+        $sessions = $this->getVisibleSessions();
+        $activeCrawls = $sessions
             ->filter('Status', 'running')
             ->count();
 
         // ── 2. Average response time of the last completed/running session ───
-        $lastSession = AuditSession::get()
+        $lastSession = $sessions
             ->filter('Status', ['completed', 'running'])
             ->sort('Created DESC')
             ->first();
@@ -96,7 +98,7 @@ class SiteSpiderWidget extends StatsWidget
         }
 
         // ── 3. Sessions started in the last 7 days ───────────────────────────
-        $sessions7d = AuditSession::get()
+        $sessions7d = $sessions
             ->filter([
                 'Created:GreaterThan' => date('Y-m-d H:i:s', strtotime('-7 days')),
             ])
@@ -142,7 +144,7 @@ class SiteSpiderWidget extends StatsWidget
     public function getExtraData(): array
     {
         /** @var AuditSession|null $last */
-        $last = AuditSession::get()
+        $last = $this->getVisibleSessions()
             ->sort('Created DESC')
             ->first();
 
@@ -196,6 +198,25 @@ class SiteSpiderWidget extends StatsWidget
     public function canView(Member $member): bool
     {
         return Permission::checkMember($member, 'ADMIN')
-            || Permission::checkMember($member, 'SITESPIDER_VIEW');
+            || Permission::checkMember($member, 'SITESPIDER_VIEW')
+            || Permission::checkMember($member, 'SITESPIDER_MANAGE');
+    }
+
+    public function getCacheKey(?Member $member = null): string
+    {
+        return parent::getCacheKey($member ?? Security::getCurrentUser());
+    }
+
+    private function getVisibleSessions(): DataList
+    {
+        $sessions = AuditSession::get();
+        $member = Security::getCurrentUser();
+        if (Permission::checkMember($member, 'ADMIN')) {
+            return $sessions;
+        }
+        if (!$member || !$this->canView($member)) {
+            return $sessions->filter(['ID' => 0]);
+        }
+        return $sessions->filter(['AuditProject.OwnerID' => $member->ID]);
     }
 }

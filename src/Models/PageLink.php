@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace Kalakotra\SiteSpider\Models;
 
+use Kalakotra\SiteSpider\Models\HasAuditProjectAccess;
 use SilverStripe\ORM\DataObject;
+use SilverStripe\Security\Permission;
+use SilverStripe\Security\Security;
 
 /**
  * PageLink — directed edge in the internal link graph.
@@ -22,6 +25,13 @@ use SilverStripe\ORM\DataObject;
  */
 class PageLink extends DataObject
 {
+    use HasAuditProjectAccess;
+
+    public function canEdit($member = null): bool
+    {
+        return Permission::checkMember($member ?? Security::getCurrentUser(), 'ADMIN');
+    }
+
     private static string $table_name = 'KSS_PageLink';
 
     private static string $singular_name = 'Page Link';

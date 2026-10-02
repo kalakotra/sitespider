@@ -50,3 +50,6 @@ Kalakotra\SiteSpider\Services\AuditService:
   ai_cannibalization_enabled: true
   ai_onpage_enabled: true
   crawl_delay_ms: 0
+
+Kalakotra\SiteSpider\Jobs\SiteAuditCrawlJob:
+  page_delay_seconds: 60
