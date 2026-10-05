@@ -103,6 +103,25 @@ class AuditService
             return $this->finaliseSession($session);
         }
 
+        if (!$this->isRobotsBlocked($page, $session)) {
+            $quota = Injector::inst()->get(MemberSeoLimitService::class)
+                ->reserveCrawlPage($session, $page);
+            if ($quota['status'] === 'limit') {
+                $session->Status = 'quota_exceeded';
+                $session->QuotaResetAt = $quota['resetAt'];
+                $session->CurrentPageID = 0;
+                $session->write();
+                return sprintf(
+                    '[Session #%d] Monthly crawl page limit reached; paused until %s.',
+                    $session->ID,
+                    $quota['resetAt'],
+                );
+            }
+            if ($quota['status'] === 'busy') {
+                return sprintf('[Session #%d] Quota reservation is busy; retrying next tick.', $session->ID);
+            }
+        }
+
         // Mark session running (idempotent)
         if ($session->Status !== 'running') {
             $session->Status    = 'running';
@@ -363,12 +382,7 @@ class AuditService
     {
         $this->logger->info("SiteSpider crawling [{$session->ID}]: {$page->URL}");
 
-        $robotsStatus = (int) $session->RobotsTxtStatus;
-        if (
-            $robotsStatus === 0
-            || $robotsStatus >= 500
-            || !$this->spider->isAllowedByRobots((string) $session->RobotsTxtContent, $page->URL)
-        ) {
+        if ($this->isRobotsBlocked($page, $session)) {
             $page->RobotsBlocked = true;
             $page->HttpStatus = 0;
             $page->CrawledAt = date('Y-m-d H:i:s');
@@ -490,6 +504,14 @@ class AuditService
         if ($delayMs > 0) {
             usleep($delayMs * 1000);
         }
+    }
+
+    private function isRobotsBlocked(AuditPage $page, AuditSession $session): bool
+    {
+        $robotsStatus = (int) $session->RobotsTxtStatus;
+        return $robotsStatus === 0
+            || $robotsStatus >= 500
+            || !$this->spider->isAllowedByRobots((string) $session->RobotsTxtContent, $page->URL);
     }
 
     // ── AI Cannibalization Analysis ───────────────────────────────────────────

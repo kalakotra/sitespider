@@ -53,6 +53,44 @@ Create a project in **CMS → Site Spider → Monitoring Projects**, set its sit
 
 Each project is owned by one SilverStripe `Member`. SaaS endpoints should require an authenticated member and use the model owner checks: a member can view/edit only records under their projects, while new projects are automatically assigned to the current member. `ADMIN` can administer all tenants. Crawl sessions, pages, links, and beacon logs are read-only to tenant users; only an administrator can delete history. Existing sessions without a project owner remain admin-only. The current CMS section separately uses `SITESPIDER_VIEW`/`SITESPIDER_MANAGE` for access to that CMS interface. Shareable client reports intentionally remain accessible by their unguessable share token.
 
+### Plan limits
+
+`MemberSeoLimitsExtension` adds `seoLimits()`, `hasSeoLimit()`, `getSeoLimit()`, `seoUsage()`, and `canUseSeoLimit()` to SilverStripe `Member`. Stable feature names are `SeoLimit::MAX_DOMAINS` and `SeoLimit::CRAWL_TASK`; the latter counts unique page scans per project/session during the current calendar month. Limits default to `null` (unlimited), so existing installations are not blocked until a billing/plan extension supplies values through SilverStripe's `updateSeoLimits` hook. Example application extension:
+
+```php
+public function updateSeoLimits(array &$limits): void
+{
+  $limits[\Kalakotra\SiteSpider\Services\SeoLimit::MAX_DOMAINS] = 3;
+  $limits[\Kalakotra\SiteSpider\Services\SeoLimit::CRAWL_TASK] = 5000;
+}
+```
+
+`MAX_DOMAINS` is checked before project creation. `CRAWL_TASK` is recorded in an idempotent monthly usage ledger; when exhausted, the crawl session pauses and the dispatcher resumes it at the next month boundary.
+
+Attach the billing application's own extension to Member to set the current plan values:
+
+```yaml
+SilverStripe\Security\Member:
+  extensions:
+  - App\Extensions\CustomerPlanLimitsExtension
+```
+
+```php
+use Kalakotra\SiteSpider\Services\SeoLimit;
+use SilverStripe\Core\Extension;
+
+class CustomerPlanLimitsExtension extends Extension
+{
+  public function updateSeoLimits(array &$limits): void
+  {
+    $limits[SeoLimit::MAX_DOMAINS] = 3;
+    $limits[SeoLimit::CRAWL_TASK] = 5000;
+  }
+}
+```
+
+Code can call `$member->seoLimits()`, `$member->getSeoLimit(SeoLimit::CRAWL_TASK)`, `$member->seoUsage(SeoLimit::CRAWL_TASK)`, and `$member->canUseSeoLimit(SeoLimit::MAX_DOMAINS)`. SilverStripe exposes extension methods dynamically, so `method_exists($member, 'seoLimits')` is not a reliable check; the module registers the extension on `Member` automatically.
+
 At session seeding, SiteSpider checks `/robots.txt` and `/llms.txt` at the site's origin and stores the findings in the AuditSession `SiteFiles` CMS tab. A robots.txt 5xx or fetch failure is treated conservatively: pages are skipped rather than crawled without a confirmed policy. A missing robots.txt is optional and allows crawling. A missing llms.txt is a recommendation, not an error.
 
 ## Creating a session

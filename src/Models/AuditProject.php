@@ -84,6 +84,12 @@ class AuditProject extends DataObject
         if (!$this->OwnerID) {
             throw new ValidationException('A monitoring project must have an owner.');
         }
+        if (!$this->isInDB() && $member && !Permission::checkMember($member, 'ADMIN')) {
+            $owner = Member::get()->byID((int) $this->OwnerID);
+            if ($owner && !$owner->canUseSeoLimit(\Kalakotra\SiteSpider\Services\SeoLimit::MAX_DOMAINS)) {
+                throw new ValidationException('Your plan domain limit has been reached.');
+            }
+        }
         $this->BaseURL = rtrim(trim((string) $this->BaseURL), '/');
         if (!$this->CrawlFrequency) {
             $this->CrawlFrequency = 'weekly';

@@ -65,7 +65,7 @@ class AuditSession extends DataObject
     private static array $db = [
         'BaseURL'     => 'Varchar(2048)',
         'SitemapUrl'  => 'Varchar(2048)',
-        'Status'      => "Enum('pending,running,completed,failed', 'pending')",
+        'Status'      => "Enum('pending,running,completed,failed,quota_exceeded', 'pending')",
         'TotalPages'  => 'Int',
         'TotalBroken' => 'Int',
         'TotalOrphans'=> 'Int',
@@ -85,6 +85,7 @@ class AuditSession extends DataObject
         'NewFindings' => 'Int',
         'ResolvedFindings' => 'Int',
         'RegressedFindings' => 'Int',
+        'QuotaResetAt' => 'Datetime',
     ];
 
     private static array $has_one = [
@@ -171,6 +172,7 @@ class AuditSession extends DataObject
                 'running'   => 'Running',
                 'completed' => 'Completed',
                 'failed'    => 'Failed',
+                'quota_exceeded' => 'Quota exceeded',
             ]),
         ]);
 
@@ -183,6 +185,7 @@ class AuditSession extends DataObject
             ReadonlyField::create('NewFindings', 'New findings'),
             ReadonlyField::create('ResolvedFindings', 'Resolved findings'),
             ReadonlyField::create('RegressedFindings', 'Regressed findings'),
+            ReadonlyField::create('QuotaResetAt', 'Quota resets at'),
             ReadonlyField::create('ProgressNice', 'Progress'),
             ReadonlyField::create('Duration', 'Duration'),
             ReadonlyField::create('StartedAt', 'Started At'),

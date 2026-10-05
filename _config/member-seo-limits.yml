@@ -1,0 +1,8 @@
+---
+Name: kalakotra-sitespider-member-seo-limits
+After:
+  - '#coreconfig'
+---
+SilverStripe\Security\Member:
+  extensions:
+    - Kalakotra\SiteSpider\Extensions\MemberSeoLimitsExtension
